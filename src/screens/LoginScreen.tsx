@@ -9,26 +9,14 @@ import {
   Platform,
   ScrollView,
   ActivityIndicator,
-  Alert,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import type { LoginResult } from '../api/auth';
-
-// ── Types ─────────────────────────────────────────────────────────
 
 interface LoginScreenProps {
   onLogin: (eid: string, pw: string) => Promise<LoginResult>;
 }
 
-// ── Component ─────────────────────────────────────────────────────
-
-/**
- * Login screen.
- *
- * Validates inputs locally before hitting the network.
- * Delegates actual auth to the onLogin prop (from useAuth).
- * On success, the RootNavigator automatically transitions to the app.
- */
 export function LoginScreen({ onLogin }: LoginScreenProps) {
   const [eid, setEid] = useState('');
   const [pw, setPw] = useState('');
@@ -37,7 +25,6 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
   const [error, setError] = useState<string | null>(null);
 
   const handleLogin = useCallback(async () => {
-    // Local validation
     const trimmedEid = eid.trim();
     if (!trimmedEid) {
       setError('Please enter your student ID.');
@@ -47,20 +34,23 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
       setError('Please enter your password.');
       return;
     }
-
     setError(null);
     setLoading(true);
-
     try {
       const result = await onLogin(trimmedEid, pw);
       if (!result.success) {
-        setError(result.error ?? 'Login failed.');
+        setError(result.error ?? 'Login failed. Check student ID or password.');
       }
-      // On success: RootNavigator detects status change and transitions automatically
     } finally {
       setLoading(false);
     }
   }, [eid, pw, onLogin]);
+
+  const handleFillDemo = () => {
+    setEid('202304918');
+    setPw('demo1234');
+    setError(null);
+  };
 
   return (
     <KeyboardAvoidingView
@@ -73,21 +63,25 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
         keyboardShouldPersistTaps="handled"
         bounces={false}
       >
-        {/* Logo */}
+        {/* NUL Branding Lockup */}
         <View style={styles.logoContainer}>
-          <View style={styles.logoBox}>
-            <Text style={styles.logoLetter}>N</Text>
+          <View style={styles.crestCircle}>
+            <View style={styles.thebeShield}>
+              <Text style={styles.thebeCross}>✝</Text>
+            </View>
           </View>
-          <Text style={styles.appName}>Thuto</Text>
-          <Text style={styles.appSub}>National University of Lesotho</Text>
+
+          <Text style={styles.universityName}>NATIONAL UNIVERSITY OF LESOTHO</Text>
+          <Text style={styles.appName}>Thuto Mobile</Text>
+          <Text style={styles.mottoText}>"Nete ke Thebe"</Text>
         </View>
 
-        {/* Card */}
+        {/* Login Card */}
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Welcome back</Text>
-          <Text style={styles.cardSub}>Sign in with your NUL credentials</Text>
+          <Text style={styles.cardTitle}>Student Sign In</Text>
+          <Text style={styles.cardSub}>Direct connection to Roma campus gateway</Text>
 
-          {/* Error banner */}
+          {/* Error Banner */}
           {error && (
             <View style={styles.errorBanner}>
               <Text style={styles.errorText}>{error}</Text>
@@ -95,13 +89,13 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
           )}
 
           {/* Student ID */}
-          <Text style={styles.label}>Student ID</Text>
+          <Text style={styles.label}>Student ID / EID</Text>
           <TextInput
             style={styles.input}
             value={eid}
             onChangeText={(v) => { setEid(v); setError(null); }}
-            placeholder="e.g. 202200123"
-            placeholderTextColor="#94A3B8"
+            placeholder="e.g. 202304918"
+            placeholderTextColor="#64748B"
             autoCapitalize="none"
             autoCorrect={false}
             keyboardType="default"
@@ -110,14 +104,14 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
           />
 
           {/* Password */}
-          <Text style={styles.label}>Password</Text>
+          <Text style={styles.label}>Portal Password</Text>
           <View style={styles.pwRow}>
             <TextInput
               style={[styles.input, styles.pwInput]}
               value={pw}
               onChangeText={(v) => { setPw(v); setError(null); }}
               placeholder="••••••••"
-              placeholderTextColor="#94A3B8"
+              placeholderTextColor="#64748B"
               secureTextEntry={!showPw}
               autoCapitalize="none"
               autoCorrect={false}
@@ -139,128 +133,164 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
             style={[styles.btn, loading && styles.btnLoading]}
             onPress={handleLogin}
             disabled={loading}
-            activeOpacity={0.85}
+            activeOpacity={0.88}
           >
             {loading ? (
-              <ActivityIndicator color="#fff" size="small" />
+              <ActivityIndicator color="#020617" size="small" />
             ) : (
-              <Text style={styles.btnText}>Sign in</Text>
+              <Text style={styles.btnText}>Sign in to Thuto</Text>
             )}
           </TouchableOpacity>
+
+          {/* Demo Account Quick-Fill */}
+          <TouchableOpacity
+            style={styles.demoBtn}
+            onPress={handleFillDemo}
+            disabled={loading}
+          >
+            <Text style={styles.demoBtnText}>Try Demo Student (202304918)</Text>
+          </TouchableOpacity>
         </View>
+
+        <Text style={styles.footerNote}>
+          Hosted on-premise at Roma Campus · Direct Sakai REST Client
+        </Text>
       </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
-// ── Styles ────────────────────────────────────────────────────────
-
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: '#1B5E20',
+    backgroundColor: '#020617', // Midnight Slate/Navy
   },
   scroll: {
     flexGrow: 1,
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
-    paddingTop: 60,
+    paddingTop: 50,
     paddingBottom: 40,
   },
-  // Logo
+  // NUL Emblem & Branding
   logoContainer: {
     alignItems: 'center',
-    marginBottom: 32,
+    marginBottom: 28,
   },
-  logoBox: {
-    width: 68,
-    height: 68,
-    borderRadius: 18,
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.2)',
+  crestCircle: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: '#0B192C',
+    borderWidth: 2.5,
+    borderColor: '#F59E0B', // Golden Amber
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 12,
+    shadowColor: '#F59E0B',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 14,
+    elevation: 8,
   },
-  logoLetter: {
-    fontSize: 30,
+  thebeShield: {
+    width: 44,
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: '#1E3E62',
+    borderWidth: 1.5,
+    borderColor: '#F59E0B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  thebeCross: {
+    color: '#F59E0B',
+    fontSize: 22,
     fontWeight: '900',
-    color: '#fff',
-    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  universityName: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#F59E0B',
+    letterSpacing: 1.2,
+    marginBottom: 2,
   },
   appName: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: '#fff',
+    fontSize: 24,
+    fontWeight: '900',
+    color: '#FFFFFF',
     letterSpacing: -0.5,
   },
-  appSub: {
+  mottoText: {
     fontSize: 12,
-    color: 'rgba(255,255,255,0.6)',
-    marginTop: 3,
+    color: '#94A3B8',
+    fontStyle: 'italic',
+    marginTop: 2,
   },
   // Card
   card: {
-    backgroundColor: '#fff',
-    borderRadius: 20,
+    backgroundColor: '#0F172A',
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.2)',
     padding: 24,
     width: '100%',
     maxWidth: 380,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.2,
-    shadowRadius: 24,
-    elevation: 10,
+    shadowOffset: { width: 0, height: 14 },
+    shadowOpacity: 0.4,
+    shadowRadius: 28,
+    elevation: 12,
   },
   cardTitle: {
-    fontSize: 20,
+    fontSize: 19,
     fontWeight: '800',
-    color: '#0F172A',
+    color: '#F8FAFC',
     marginBottom: 4,
   },
   cardSub: {
-    fontSize: 13,
-    color: '#64748B',
+    fontSize: 12,
+    color: '#94A3B8',
     marginBottom: 20,
   },
-  // Error
+  // Error Banner
   errorBanner: {
-    backgroundColor: '#FEF2F2',
-    borderRadius: 10,
-    borderLeftWidth: 3,
-    borderLeftColor: '#DC2626',
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    borderRadius: 12,
+    borderLeftWidth: 3.5,
+    borderLeftColor: '#EF4444',
     padding: 12,
     marginBottom: 16,
   },
   errorText: {
-    fontSize: 13,
-    color: '#DC2626',
+    fontSize: 12,
+    color: '#FCA5A5',
     fontWeight: '600',
+    lineHeight: 16,
   },
-  // Inputs
+  // Form Inputs
   label: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#64748B',
+    color: '#CBD5E1',
     textTransform: 'uppercase',
     letterSpacing: 0.6,
     marginBottom: 6,
   },
   input: {
     borderWidth: 1.5,
-    borderColor: '#E2E8F0',
-    borderRadius: 10,
+    borderColor: '#334155',
+    borderRadius: 12,
     padding: 12,
     fontSize: 15,
-    color: '#0F172A',
+    color: '#F8FAFC',
     marginBottom: 14,
-    backgroundColor: '#fff',
+    backgroundColor: '#020617',
   },
   pwRow: {
     position: 'relative',
-    marginBottom: 22,
+    marginBottom: 20,
   },
   pwInput: {
     marginBottom: 0,
@@ -269,27 +299,48 @@ const styles = StyleSheet.create({
   eyeBtn: {
     position: 'absolute',
     right: 12,
-    top: 12,
+    top: 13,
   },
   eyeIcon: {
     fontSize: 16,
   },
   // Button
   btn: {
-    backgroundColor: '#2E7D32',
-    borderRadius: 12,
+    backgroundColor: '#F59E0B', // Golden amber
+    borderRadius: 14,
     padding: 14,
     alignItems: 'center',
     justifyContent: 'center',
     minHeight: 48,
+    shadowColor: '#F59E0B',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 4,
   },
   btnLoading: {
-    backgroundColor: '#43A047',
+    backgroundColor: '#D97706',
   },
   btnText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '700',
-    letterSpacing: 0.2,
+    color: '#020617',
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  demoBtn: {
+    marginTop: 14,
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  demoBtnText: {
+    fontSize: 12,
+    color: '#F59E0B',
+    fontWeight: '600',
+  },
+  footerNote: {
+    fontSize: 11,
+    color: '#64748B',
+    marginTop: 24,
+    textAlign: 'center',
   },
 });
