@@ -1,0 +1,27 @@
+{
+  "id": "/",
+  "name": "Thuto Mobile — NUL Learning Portal",
+  "short_name": "Thuto",
+  "description": "Mobile gateway for National University of Lesotho Thuto Sakai learning portal with offline cache and deadline push alerts.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0B192C",
+  "theme_color": "#0B192C",
+  "categories": ["education", "productivity"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}
