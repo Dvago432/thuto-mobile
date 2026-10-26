@@ -1,0 +1,10 @@
+{
+  "name": "Thuto Mobile — NUL Learning Portal Gateway",
+  "description": "Mobile gateway for National University of Lesotho Thuto Sakai portal with persistent authentication, offline course materials, and assignment deadline countdown alerts.",
+  "requestFramePermissions": [
+    "notifications"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

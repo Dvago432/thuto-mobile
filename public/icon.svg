@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0B192C"/>
+      <stop offset="100%" stop-color="#1E3E62"/>
+    </linearGradient>
+    <linearGradient id="amber" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F59E0B"/>
+      <stop offset="100%" stop-color="#D97706"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="128" fill="url(#grad)"/>
+  <rect x="24" y="24" width="464" height="464" rx="104" fill="none" stroke="rgba(245, 158, 11, 0.25)" stroke-width="4"/>
+  <!-- Shield and Torch / Book Motif -->
+  <g transform="translate(96, 96)" filter="url(#shadow)">
+    <!-- Open Book / Portal Gateway -->
+    <path d="M160 270 C110 240, 40 240, 20 250 L20 100 C40 90, 110 90, 160 120 C210 90, 280 90, 300 100 L300 250 C280 240, 210 240, 160 270 Z" 
+          fill="#FFFFFF" fill-opacity="0.95"/>
+    <path d="M160 120 L160 270" stroke="#0B192C" stroke-width="8" stroke-linecap="round"/>
+    
+    <!-- Central Academic Flame / Torch -->
+    <path d="M160 30 C175 60, 195 85, 185 110 C175 130, 145 130, 135 110 C125 85, 145 60, 160 30 Z" 
+          fill="url(#amber)"/>
+    <circle cx="160" cy="95" r="12" fill="#FEF3C7"/>
+  </g>
+</svg>
