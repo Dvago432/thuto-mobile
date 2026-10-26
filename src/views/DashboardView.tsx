@@ -34,7 +34,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     searchQuery, 
     setSearchQuery,
     selectedFaculty,
-    setSelectedFaculty
+    setSelectedFaculty,
+    isLoadingCourses,
+    reloadEnrolledCourses
   } = useCourses();
 
   const [refreshing, setRefreshing] = useState(false);
@@ -255,20 +257,57 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <span className="font-semibold text-slate-200">
             Enrolled Courses ({filteredCourses.length})
           </span>
-          <span className="text-[11px]">Semester 1 (2026/27)</span>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => reloadEnrolledCourses()}
+              disabled={isLoadingCourses}
+              className="text-amber-400 hover:text-amber-300 font-medium flex items-center gap-1 transition"
+              title="Auto-load enrolled courses from Thuto"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoadingCourses ? 'animate-spin' : ''}`} />
+              <span>{isLoadingCourses ? 'Auto-loading...' : 'Auto-Load'}</span>
+            </button>
+            <span className="text-[11px] text-slate-500">Semester 1</span>
+          </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-          {filteredCourses.map((course) => {
-            const nextPending = course.assignments.find((a) => a.status === 'pending');
-            const cachedCount = cachedFiles.filter((f) => f.courseCode === course.code).length;
+        {isLoadingCourses && (
+          <div className="p-4 rounded-2xl bg-slate-900/60 border border-amber-500/30 flex items-center gap-3 text-xs text-amber-300">
+            <RefreshCw className="w-4 h-4 animate-spin shrink-0 text-amber-400" />
+            <span>Auto-loading enrolled course workspaces from Thuto Sakai server...</span>
+          </div>
+        )}
 
-            return (
-              <div
-                key={course.id}
-                onClick={() => onSelectCourse(course.id)}
-                className="group p-4 rounded-3xl bg-slate-900/90 border border-slate-800/90 hover:border-amber-500/40 transition-all cursor-pointer shadow-lg active:scale-[0.99] flex flex-col justify-between"
+        {filteredCourses.length === 0 && !isLoadingCourses ? (
+          <div className="p-10 rounded-3xl bg-slate-900/60 border border-slate-800 text-center text-slate-400 space-y-3 shadow-md">
+            <GraduationCap className="w-10 h-10 text-amber-500/60 mx-auto" />
+            <div className="space-y-1">
+              <h3 className="font-display font-semibold text-sm text-white">No Enrolled Courses Found</h3>
+              <p className="text-xs text-slate-400 max-w-sm mx-auto">
+                No active courses are currently loaded for your student account. Tap below to automatically sync or enter your registered module codes.
+              </p>
+            </div>
+            <div className="flex items-center justify-center gap-2 pt-1">
+              <button
+                onClick={() => setShowSyncModal(true)}
+                className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs inline-flex items-center gap-1.5 transition active:scale-95 shadow-sm"
               >
+                <RefreshCw className="w-3.5 h-3.5" /> Sync Course Modules
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+            {filteredCourses.map((course) => {
+              const nextPending = course.assignments.find((a) => a.status === 'pending');
+              const cachedCount = cachedFiles.filter((f) => f.courseCode === course.code).length;
+
+              return (
+                <div
+                  key={course.id}
+                  onClick={() => onSelectCourse(course.id)}
+                  className="group p-4 rounded-3xl bg-slate-900/90 border border-slate-800/90 hover:border-amber-500/40 transition-all cursor-pointer shadow-lg active:scale-[0.99] flex flex-col justify-between"
+                >
                 <div>
                   <div className="flex items-start justify-between gap-2">
                     <span className="font-mono text-xs font-bold text-amber-400 tracking-wider">
@@ -329,7 +368,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
             );
           })}
-        </div>
+          </div>
+        )}
       </div>
 
       {/* Sakai Course Sync Modal */}

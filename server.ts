@@ -507,13 +507,27 @@ async function startServer() {
     }
   });
 
+  // Student course registration memory cache
+  const STUDENT_COURSES_REGISTRY: Record<string, string[]> = {};
+
   // 4. Batch Course Extractor with Direct Modules / Files Ingestion
   app.post('/api/sakai/extract-courses', async (req: Request, res: Response) => {
-    const { siteCodes, isManualInput } = req.body;
+    const { siteCodes, isManualInput, eid } = req.body;
+    let targetCodes: string[] = Array.isArray(siteCodes) ? siteCodes : [];
+    const cleanEid = eid ? String(eid).trim() : null;
+
+    if (cleanEid && targetCodes.length === 0) {
+      targetCodes = STUDENT_COURSES_REGISTRY[cleanEid] || [];
+    }
+
+    if (cleanEid && targetCodes.length > 0) {
+      STUDENT_COURSES_REGISTRY[cleanEid] = targetCodes;
+    }
+
     let extracted: any[] = [];
 
-    if (Array.isArray(siteCodes)) {
-      for (const rawCode of siteCodes) {
+    if (Array.isArray(targetCodes) && targetCodes.length > 0) {
+      for (const rawCode of targetCodes) {
         if (!rawCode || typeof rawCode !== 'string') continue;
         const { code, name } = parseCourseDetails(rawCode, rawCode);
         if (!extracted.some((c) => c.code === code)) {
