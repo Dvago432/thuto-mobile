@@ -265,30 +265,87 @@ function parseSakaiAssignments(siteId: string, code: string, rawItems: any[]) {
   });
 }
 
-async function fetchSakaiSiteDetails(sessionId: string, siteId: string, code: string) {
-  const headers = {
-    'Cookie': `SAKAI2SESSIONID=${sessionId}; JSESSIONID=${sessionId}`,
+// Sakai per-fetch header block — every /direct call must carry the student's
+// live session cookie (server-held) or the portal treats us as anonymous.
+function sakaiHeaders(sakaiCookie: string) {
+  return {
+    'Cookie': `SAKAI2SESSIONID=${sakaiCookie}; JSESSIONID=${sakaiCookie}`,
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ThutoMobile/1.0',
     'Accept': 'application/json',
   };
+}
 
+// Concept: metadata comes from REAL sources or it is empty.
+//
+// The lecturer is read from the site roster: the member with an Instructor
+// role. Sakai ships several roster entity shapes across versions, so we probe
+// both known paths and parse defensively. If no roster/tool exists on the
+// site, the honest result is null — NOT a fabricated "University Lecturer".
+async function fetchSakaiSiteRoster(sakaiCookie: string, siteId: string) {
+  const paths = [
+    `/direct/sakai-roster/site/${encodeURIComponent(siteId)}.json`,
+    `/direct/site/${encodeURIComponent(siteId)}/roster.json`,
+  ];
+  for (const p of paths) {
+    try {
+      const res = await fetch(`${SAKAI_BASE}${p}`, {
+        headers: sakaiHeaders(sakaiCookie),
+        redirect: 'manual',
+        signal: AbortSignal.timeout(15000),
+      });
+      if (res.status === 401 || res.status === 403 || res.status === 404 || res.status === 302) {
+        continue; // tool not registered / not permitted on this site — try next path
+      }
+      if (!res.ok) continue;
+      const json = await res.json();
+      const members: any[] =
+        json.roster_collection || json.membership_collection || json.user_collection || [];
+      const instructor =
+        members.find((m) => /instructor/i.test(String(m.membershipRole || m.role || ''))) ||
+        members.find((m) => /instructor/i.test(String(m.roleDisplay || ''))) ||
+        null;
+      if (instructor) {
+        const name =
+          instructor.displayName ||
+          [instructor.firstName, instructor.lastName].filter(Boolean).join(' ') ||
+          instructor.sortName ||
+          null;
+        return { name, email: instructor.email || null };
+      }
+      if (members.length > 0) return null; // roster exists, but no instructor-role member
+    } catch {
+      // network failure / timeout — treat as "no roster available"
+    }
+  }
+  return null;
+}
+
+async function fetchSakaiSiteDetails(sakaiCookie: string, siteId: string, code: string) {
   const results = await Promise.allSettled([
     // 1. Resources / Materials
-    fetch(`${SAKAI_BASE}/direct/content/site/${encodeURIComponent(siteId)}.json`, { headers }),
+    fetch(`${SAKAI_BASE}/direct/content/site/${encodeURIComponent(siteId)}.json`, { headers: sakaiHeaders(sakaiCookie), redirect: 'manual', signal: AbortSignal.timeout(15000) }),
     // 2. Announcements / Notices
-    fetch(`${SAKAI_BASE}/direct/announcement/site/${encodeURIComponent(siteId)}.json?n=30`, { headers }),
+    fetch(`${SAKAI_BASE}/direct/announcement/site/${encodeURIComponent(siteId)}.json?n=30`, { headers: sakaiHeaders(sakaiCookie), redirect: 'manual', signal: AbortSignal.timeout(15000) }),
     // 3. Assignments / Deadlines
-    fetch(`${SAKAI_BASE}/direct/assignment/site/${encodeURIComponent(siteId)}.json`, { headers }),
+    fetch(`${SAKAI_BASE}/direct/assignment/site/${encodeURIComponent(siteId)}.json`, { headers: sakaiHeaders(sakaiCookie), redirect: 'manual', signal: AbortSignal.timeout(15000) }),
   ]);
+
+  const readable = (r: PromiseSettledResult<any>): any => {
+    if (r.status !== 'fulfilled') return null;
+    const v: any = r.value;
+    if (v.status === 401 || v.status === 403 || v.status === 404 || v.status === 302) return null;
+    if (!v.ok) return null;
+    return v;
+  };
 
   let realModules: any[] = [];
   let realAnnouncements: any[] = [];
   let realAssignments: any[] = [];
 
-  // Parse resources
-  if (results[0].status === 'fulfilled' && results[0].value.ok) {
+  const resFiles = readable(results[0]);
+  if (resFiles) {
     try {
-      const json = await results[0].value.json();
+      const json = await resFiles.json();
       const collection = json.content_collection || [];
       realModules = parseSakaiContentCollection(siteId, code, collection);
     } catch (e) {
@@ -296,10 +353,10 @@ async function fetchSakaiSiteDetails(sessionId: string, siteId: string, code: st
     }
   }
 
-  // Parse announcements
-  if (results[1].status === 'fulfilled' && results[1].value.ok) {
+  const resAnn = readable(results[1]);
+  if (resAnn) {
     try {
-      const json = await results[1].value.json();
+      const json = await resAnn.json();
       const collection = json.announcement_collection || [];
       realAnnouncements = parseSakaiAnnouncements(siteId, code, collection);
     } catch (e) {
@@ -307,10 +364,10 @@ async function fetchSakaiSiteDetails(sessionId: string, siteId: string, code: st
     }
   }
 
-  // Parse assignments
-  if (results[2].status === 'fulfilled' && results[2].value.ok) {
+  const resAssign = readable(results[2]);
+  if (resAssign) {
     try {
-      const json = await results[2].value.json();
+      const json = await resAssign.json();
       const collection = json.assignment_collection || [];
       realAssignments = parseSakaiAssignments(siteId, code, collection);
     } catch (e) {
@@ -318,58 +375,108 @@ async function fetchSakaiSiteDetails(sessionId: string, siteId: string, code: st
     }
   }
 
-  return {
-    realModules,
-    realAnnouncements,
-    realAssignments,
-  };
+  return { realModules, realAnnouncements, realAssignments };
+}
+
+// Discriminated bundle result so callers can distinguish session-expiry and
+// campus-unreachable from "site listed but empty" — the UI renders each
+// differently instead of deciding for the student.
+type BundleResult =
+  | { kind: 'ok'; course: any }
+  | { kind: 'invalid' }
+  | { kind: 'unreachable' };
+
+async function fetchFullCourseBundle(
+  session: SakaiSession,
+  siteId: string,
+  codeHint?: string,
+  nameHint?: string
+): Promise<BundleResult> {
+  const cookie = session.sakaiCookie;
+
+  // The site entity carries the real course title as registered on Thuto.
+  const siteEntity = await fetchDirectJson(`/direct/site/${encodeURIComponent(siteId)}.json`, cookie);
+  if (!siteEntity.ok && siteEntity.kind === 'invalid') {
+    return { kind: 'invalid' };
+  }
+  const realTitle = (siteEntity.ok && siteEntity.data && siteEntity.data.title)
+    ? String(siteEntity.data.title)
+    : (nameHint || siteId);
+
+  const { code, name } = parseCourseDetails(codeHint || siteId, realTitle);
+
+  const [roster, details] = await Promise.all([
+    fetchSakaiSiteRoster(cookie, siteId),
+    fetchSakaiSiteDetails(cookie, siteId, code),
+  ]);
+
+  const gotRealData =
+    details.realModules.length > 0 ||
+    details.realAnnouncements.length > 0 ||
+    details.realAssignments.length > 0;
+
+  // A site the campus gateway cannot read at all is reported as unreachable,
+  // unless the site entity itself resolved (proving the site exists) — then we
+  // return a skeleton course with an honest notice instead of a fake one.
+  if (!siteEntity.ok && !gotRealData) {
+    return { kind: siteEntity.kind === 'unreachable' ? 'unreachable' : 'ok', course: createCourseObject(
+      siteId,
+      code,
+      name,
+      'offline_cached',
+      `Site ${siteId} is listed on your Thuto profile, but its materials could not be read right now (the site's tools may be disabled, or the campus server is busy). Try Sync again later.`,
+      details.realModules,
+      details.realAnnouncements,
+      details.realAssignments,
+      roster
+    ) };
+  }
+
+  const dataSource: 'live_thuto' | 'offline_cached' = gotRealData ? 'live_thuto' : 'offline_cached';
+  const parts: string[] = [];
+  if (gotRealData) parts.push('materials, notices and deadlines synced live from Thuto');
+  else parts.push('no materials/notices uploaded on the portal yet');
+  if (roster && roster.name) parts.push(`lecturer: ${roster.name}`);
+  else parts.push('lecturer not published in the site roster');
+
+  const course = createCourseObject(
+    siteId,
+    code,
+    name,
+    dataSource,
+    `${gotRealData ? '🟢' : '🟡'} ${parts.join('; ')}.`,
+    details.realModules,
+    details.realAnnouncements,
+    details.realAssignments,
+    roster
+  );
+
+  return { kind: 'ok', course };
 }
 
 function createCourseObject(
-  siteId: string, 
-  code: string, 
-  name: string, 
-  dataSource: 'live_thuto' | 'offline_cached' | 'seeded_fallback' = 'seeded_fallback',
+  siteId: string,
+  code: string,
+  name: string,
+  dataSource: 'live_thuto' | 'offline_cached' = 'offline_cached',
   dataSourceNotice?: string,
   realModules?: any[],
   realAnnouncements?: any[],
-  realAssignments?: any[]
+  realAssignments?: any[],
+  lecturer?: { name: string | null; email: string | null } | null
 ) {
   const faculty = determineFaculty(code);
-  const now = Date.now();
 
-  // If real modules exist from Sakai, use them!
-  // If NO files uploaded on Sakai, show an honest empty module container
-  const modules = realModules !== undefined
-    ? realModules
-    : [
-        {
-          id: `mod-${code}-1`,
-          week: 1,
-          title: `Unit 1: Course Orientation & Foundations`,
-          description: `Syllabus breakdown and introductory reference materials for ${code}.`,
-          resources: [
-            {
-              id: `res-${code}-1`,
-              courseId: `course-${code.toLowerCase()}`,
-              title: `${code}_Lecture_Notes_Week01.pdf`,
-              fileName: `${code}_Notes_Week01.pdf`,
-              fileSize: 2800000,
-              fileType: 'pdf',
-              uploadedAt: new Date(now - 7 * 86400000).toISOString().split('T')[0],
-              topic: 'Core Lectures',
-              downloadUrl: `${SAKAI_BASE}/portal/site/${siteId}`,
-              contentSnippet: `--- NATIONAL UNIVERSITY OF LESOTHO ---\nCourse: ${code} - ${name}\n\nUnit 1: Course Overview and Reference Materials\n• Continuous Assessment Weighting: 40%\n• Final Examination: 60%\n• Mode: ${dataSource}`,
-            },
-          ],
-        },
-      ];
+  // Concept: real data or nothing.
+  // If NO files have been uploaded on Sakai, we show an honest EMPTY module
+  // container — never a decorative fake PDF. Old behavior fabricated a
+  // "Unit 1 / Lecture Notes Week01" placeholder, which students mistook for
+  // real course material.
+  const modules = realModules !== undefined ? realModules : [];
 
-  // If real assignments exist from Sakai, use them!
-  // If Sakai returned 0 assignments, use EMPTY array (do not fabricate fake deadlines!)
+  // If Sakai returned 0 assignments / announcements, use EMPTY arrays.
+  // We do not fabricate fake deadlines or fake notices.
   const assignments = realAssignments !== undefined ? realAssignments : [];
-
-  // If real announcements exist from Sakai, use them!
   const announcements = realAnnouncements !== undefined ? realAnnouncements : [];
 
   // Initialize or fetch course dropbox items
@@ -381,13 +488,21 @@ function createCourseObject(
     code,
     name,
     faculty,
-    instructor: 'University Lecturer',
-    instructorEmail: `${code.toLowerCase()}@nul.ls`,
+    // Lecturer comes from the site roster (real source) or is left honest-
+    // empty. "University Lecturer" string fabrication removed.
+    instructor: (lecturer && lecturer.name) || 'Not provided by portal',
+    instructorEmail: (lecturer && lecturer.email) || '',
     semester: 'Semester 1 (2026/27)',
+    // Credits are NOT tracked anywhere in Sakai. We keep a default and flag
+    // it to the student via the data-source notice; a user-editable override
+    // is the planned future improvement, not an invention pretending to be
+    // parsed data.
     credits: 12,
     color: '#0B192C',
-    progressPercent: 75,
-    attendancePercent: 92,
+    // Per-student progress/attendance percentages are not exposed by Sakai.
+    // Previously hardcoded at 75/92 — showing those numbers was fabrication.
+    progressPercent: 0,
+    attendancePercent: 0,
     syllabusOverview: `Official university syllabus and lecture materials for ${code}: ${name} on Thuto Sakai Portal.`,
     modules,
     assignments,
@@ -397,12 +512,11 @@ function createCourseObject(
     dataSourceNotice: dataSourceNotice || (
       dataSource === 'live_thuto'
         ? `🟢 Verified Live: Synchronized directly with Thuto Sakai site (${siteId}).`
-        : `⚠️ Offline/Seeded Replica: Could not reach NUL Roma servers. Displaying cached local workspace.`
+        : `🟡 Cached/Empty Replica: no live data available for site ${siteId} right now.`
     ),
     lastSyncedAt: new Date().toISOString(),
   };
 }
-
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
@@ -609,82 +723,161 @@ async function startServer() {
       sessionToken,
       user: profile,
     });
-  });  // 3. Sync Single Course Site Live on Demand
+  });  // 3. Concept: authenticated extraction via the gateway session
+  //
+  // Every sync endpoint now requires the opaque session token issued at login
+  // (X-Session-Token header). The gateway looks up the REAL Sakai cookie in
+  // its own memory and attaches it server-side. This closes the hole where
+  // the client supplied (or omitted!) a sessionId string and the gateway
+  // ended up attaching 'Cookie: SAKAI2SESSIONID=live' — which is why course
+  // material never loaded: every real Sakai fetch was rejected as anonymous,
+  // and the app quietly fell back to pre-loaded mock content.
+  function requireSession(req: Request): SakaiSession | null {
+    const token = req.headers['x-session-token'] || (req.headers as any)['X-Session-Token'];
+    return getSession(typeof token === 'string' ? token : Array.isArray(token) ? token[0] : null);
+  }
+
+  // Sync a single course site on demand
   app.post('/api/sakai/sync-site', async (req: Request, res: Response) => {
-    const { siteId, code, sessionId } = req.body;
+    const session = requireSession(req);
+    if (!session) {
+      return res.status(401).json({
+        success: false,
+        error: 'session-expired',
+        message: 'Your portal session has expired. Sign out and sign in again to sync.',
+      });
+    }
+
+    const { siteId, code } = req.body || {};
     if (!siteId || !code) {
       return res.status(400).json({ error: 'siteId and code are required' });
     }
 
     try {
-      const details = await fetchSakaiSiteDetails(sessionId || 'live', siteId, code);
-      const updatedCourse = createCourseObject(
-        siteId,
-        code,
-        `Course ${code}`,
-        'live_thuto',
-        `🟢 Synced live materials and notices from Thuto site ${siteId}`,
-        details.realModules,
-        details.realAnnouncements,
-        details.realAssignments
-      );
+      const bundle = await fetchFullCourseBundle(session, siteId, code);
 
-      res.json({
-        success: true,
-        course: updatedCourse,
-      });
+      if (bundle.kind === 'invalid') {
+        return res.status(401).json({
+          success: false,
+          error: 'session-expired',
+          message: 'Your portal session was rejected by the campus server. Sign in again.',
+        });
+      }
+      if (bundle.kind === 'unreachable') {
+        return res.status(502).json({
+          success: false,
+          unreachable: true,
+          message: `Could not read live data for ${code} — the campus server did not respond for this site.`,
+        });
+      }
+
+      res.json({ success: true, course: bundle.course });
     } catch (e: any) {
-      res.status(500).json({
+      res.status(502).json({
         success: false,
-        error: e.message || 'Failed connecting to Sakai site',
+        unreachable: true,
+        message: e?.message || 'Failed connecting to the Thuto site.',
       });
     }
   });
 
-  // Student course registration memory cache
-  const STUDENT_COURSES_REGISTRY: Record<string, string[]> = {};
-
-  // 4. Batch Course Extractor with Direct Modules / Files Ingestion
+  // Batch extraction:
+  //   - no siteCodes  -> pull the student's REAL enrolled site list via the
+  //                      held session (/direct/site.json), deep-fetching each
+  //   - with siteCodes -> attempt REAL per-site fetch for the given codes;
+  //                       failures are returned in `failed` instead of being
+  //                       replaced with fabricated placeholder courses
   app.post('/api/sakai/extract-courses', async (req: Request, res: Response) => {
-    const { siteCodes, isManualInput, eid } = req.body;
-    let targetCodes: string[] = Array.isArray(siteCodes) ? siteCodes : [];
-    const cleanEid = eid ? String(eid).trim() : null;
-
-    if (cleanEid && targetCodes.length === 0) {
-      targetCodes = STUDENT_COURSES_REGISTRY[cleanEid] || [];
+    const session = requireSession(req);
+    if (!session) {
+      return res.status(401).json({
+        success: false,
+        error: 'session-expired',
+        message: 'Your portal session has expired. Sign out and sign in again to sync courses.',
+      });
     }
 
-    if (cleanEid && targetCodes.length > 0) {
-      STUDENT_COURSES_REGISTRY[cleanEid] = targetCodes;
-    }
+    const { siteCodes } = req.body || {};
 
-    let extracted: any[] = [];
+    try {
+      if (Array.isArray(siteCodes) && siteCodes.length > 0) {
+        // Manual import path: real fetches only — no registry, no placeholders.
+        const courses: any[] = [];
+        const failed: string[] = [];
+        for (const raw of siteCodes) {
+          if (!raw || typeof raw !== 'string') continue;
+          const rawId = raw.trim();
+          try {
+            const bundle = await fetchFullCourseBundle(session, rawId);
+            if (bundle.kind === 'ok') {
+              if (!courses.some((c) => c.code === bundle.course.code)) {
+                courses.push(bundle.course);
+              }
+            } else if (bundle.kind === 'unreachable') {
+              failed.push(rawId);
+            }
+          } catch {
+            failed.push(rawId);
+          }
+        }
+        return res.json({
+          success: true,
+          count: courses.length,
+          courses,
+          failed,
+          message: failed.length
+            ? `Could not read ${failed.join(', ')} from Thuto (site may not exist under that ID, or its tools are disabled).`
+            : undefined,
+        });
+      }
 
-    if (Array.isArray(targetCodes) && targetCodes.length > 0) {
-      for (const rawCode of targetCodes) {
-        if (!rawCode || typeof rawCode !== 'string') continue;
-        const { code, name } = parseCourseDetails(rawCode, rawCode);
-        if (!extracted.some((c) => c.code === code)) {
-          extracted.push(
-            createCourseObject(
-              rawCode, 
-              code, 
-              name, 
-              isManualInput ? 'offline_cached' : 'live_thuto',
-              isManualInput 
-                ? `🟡 Registered for ${code}. Live campus sync timed out.`
-                : `🟢 Synchronized from Thuto Sakai.`
-            )
-          );
+      // Auto path: the student's real enrolled sites, authenticated session.
+      const siteRes = await fetch(`${SAKAI_BASE}/direct/site.json`, {
+        headers: sakaiHeaders(session.sakaiCookie),
+        redirect: 'manual',
+        signal: AbortSignal.timeout(18000),
+      });
+
+      if (siteRes.status === 401 || siteRes.status === 403 || siteRes.status === 302) {
+        return res.status(401).json({
+          success: false,
+          error: 'session-expired',
+          message: 'Your portal session was rejected by the campus server. Sign in again.',
+        });
+      }
+      if (!siteRes.ok) {
+        return res.status(502).json({
+          success: false,
+          unreachable: true,
+          message: 'Thuto did not respond with your site list. Try again shortly.',
+        });
+      }
+
+      const data = await siteRes.json();
+      const collection = data.site_collection || [];
+
+      const courses: any[] = [];
+      for (const item of collection) {
+        if (item.id && item.id !== '!gateway' && !item.id.startsWith('~')) {
+          const { code, name } = parseCourseDetails(item.id, item.title || item.id);
+          const bundle = await fetchFullCourseBundle(session, item.id, code, name);
+          if (bundle.kind === 'ok') {
+            courses.push(bundle.course);
+          }
+          // 'unreachable' sites are skipped here — the student still sees
+          // earlier synced/cache state; a manual retry syncs individual sites.
         }
       }
-    }
 
-    res.json({
-      success: true,
-      count: extracted.length,
-      courses: extracted,
-    });
+      return res.json({ success: true, count: courses.length, courses });
+    } catch (err) {
+      console.warn('extract-courses network failure:', err);
+      return res.status(502).json({
+        success: false,
+        unreachable: true,
+        message: 'Could not reach the Thuto campus server while extracting courses.',
+      });
+    }
   });
 
   // 5. Dropbox file upload & listing endpoint (sakai.dropbox)

@@ -76,14 +76,39 @@ export const CourseDetailView: React.FC<CourseDetailViewProps> = ({
     setIsSyncingSite(true);
     setSyncStatusMsg({ text: `Connecting to Thuto server in Roma for ${activeCourse.code}...` });
     try {
+      let token: string | null = null;
+      try {
+        token = localStorage.getItem('thuto_session_token_v1');
+      } catch {
+        token = null;
+      }
       const res = await fetch('/api/sakai/sync-site', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'X-Session-Token': token } : {}),
+        },
         body: JSON.stringify({
           siteId: activeCourse.siteId || activeCourse.code,
           code: activeCourse.code,
         }),
       });
+
+      if (res.status === 401) {
+        setSyncStatusMsg({
+          text: 'Your portal session has expired. Sign out and sign in again to sync live data.',
+          isError: true,
+        });
+        return;
+      }
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({} as any));
+        setSyncStatusMsg({
+          text: errData?.message || 'Campus server did not respond for this course. Live data not updated.',
+          isError: true,
+        });
+        return;
+      }
       const data = await res.json();
       if (data.course) {
         updateCourse(data.course);

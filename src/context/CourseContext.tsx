@@ -41,6 +41,18 @@ function getInitialUser(): StudentUser | null {
   }
 }
 
+// The gateway session token issued at login (AuthContext stores it). Sync
+// endpoints require it: the gateway swaps the token for the REAL Sakai cookie
+// it keeps in memory. A missing token means we are in a stale/demo window and
+// no live sync can happen — the UI's honest states cover that.
+function getStoredSessionToken(): string | null {
+  try {
+    return localStorage.getItem('thuto_session_token_v1');
+  } catch {
+    return null;
+  }
+}
+
 function getCourseStorageKey(user: StudentUser | null): string {
   if (user && !user.isDemo && user.studentNumber) {
     return `thuto_courses_student_${user.studentNumber}`;
@@ -118,12 +130,22 @@ export const CourseProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const storageKey = getCourseStorageKey(currentUser);
 
     try {
-      console.info(`[CourseProvider:reloadEnrolledCourses] Requesting enrolled sites from /api/sakai/extract-courses for ${currentUser.studentNumber}...`);
+      const token = getStoredSessionToken();
       const res = await fetch('/api/sakai/extract-courses', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'X-Session-Token': token } : {}),
+        },
         body: JSON.stringify({ eid: currentUser.studentNumber }),
       });
+
+      if (res.status === 401) {
+        // Session expired/invalid: do NOT touch stored courses (they remain the
+        // user's last-honest cache); the next manual sync prompts re-login.
+        console.warn('[CourseProvider:reloadEnrolledCourses] Session expired on the gateway. Skipping live sync until re-login.');
+        return;
+      }
 
       if (res.ok) {
         const data = await res.json();
@@ -274,13 +296,23 @@ export const CourseProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const syncWithThutoExtractor = async (payload: { html?: string; siteCodes?: string[]; eid?: string }): Promise<number> => {
     console.info('[CourseProvider:syncWithThutoExtractor] Payload:', payload);
     try {
+      const token = getStoredSessionToken();
       const res = await fetch('/api/sakai/extract-courses', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'X-Session-Token': token } : {}),
+        },
         body: JSON.stringify(payload),
       });
+
+      if (res.status === 401) {
+        console.warn('[CourseProvider:syncWithThutoExtractor] Session expired — cannot live-sync. Student must re-login.');
+        return 0;
+      }
+
       const data = await res.json();
-      if (data.courses && Array.isArray(data.courses) && data.courses.length > 0) {
+      if (Array.isArray(data.courses) && data.courses.length > 0) {
         console.info(`[CourseProvider:syncWithThutoExtractor] Extracted ${data.courses.length} courses.`);
         const currentUser = getInitialUser();
         const key = getCourseStorageKey(currentUser);
@@ -304,54 +336,45 @@ export const CourseProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       return true;
     }
 
+    // Concept: adding a course is a REAL portal action or it fails honestly.
+    // The old flow fabricated an "offline_cached" course (invented lecturer,
+    // credits, progress bars) whenever the server was unreachable — teaching
+    // students the course was registered when nothing happened. Now: real
+    // sync or a false return, and the UI tells the student the truth.
     try {
+      const token = getStoredSessionToken();
       const res = await fetch('/api/sakai/sync-site', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'X-Session-Token': token } : {}),
+        },
         body: JSON.stringify({ siteId: cleanCode, code: cleanCode }),
       });
-      const data = await res.json();
-      if (data.course) {
-        const next = [data.course, ...courses];
-        setCourses(next);
-        const currentUser = getInitialUser();
-        const key = getCourseStorageKey(currentUser);
-        localStorage.setItem(key, JSON.stringify(next));
-        return true;
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.course) {
+          const next = [data.course, ...courses];
+          setCourses(next);
+          const currentUser = getInitialUser();
+          const key = getCourseStorageKey(currentUser);
+          localStorage.setItem(key, JSON.stringify(next));
+          return true;
+        }
+      } else {
+        const errData = await res.json().catch(() => null);
+        console.warn(
+          '[CourseProvider:registerNewCourse] Live sync failed:',
+          res.status,
+          errData?.message || ''
+        );
       }
-    } catch {
-      // Local fallback if server unreachable
+    } catch (e) {
+      console.warn('[CourseProvider:registerNewCourse] Network error:', e);
     }
 
-    const newCourse: Course = {
-      id: `course-${cleanCode.toLowerCase()}`,
-      siteId: cleanCode,
-      code: cleanCode,
-      name: name?.trim() || `Course ${cleanCode}`,
-      faculty: (faculty as Faculty) || 'Faculty of Science & Technology',
-      instructor: 'Course Lecturer',
-      instructorEmail: `${cleanCode.toLowerCase()}@nul.ls`,
-      semester: 'Semester 1 (2026/27)',
-      credits: 12,
-      color: '#0B192C',
-      progressPercent: 70,
-      attendancePercent: 90,
-      syllabusOverview: `University syllabus and course workspace for ${cleanCode} on Thuto Sakai.`,
-      modules: [],
-      assignments: [],
-      announcements: [],
-      dropboxItems: [],
-      dataSource: 'offline_cached',
-      dataSourceNotice: `🟡 Manually registered for ${cleanCode}. Campus server connection timed out.`,
-      lastSyncedAt: new Date().toISOString(),
-    };
-
-    const updated = [newCourse, ...courses];
-    setCourses(updated);
-    const currentUser = getInitialUser();
-    const key = getCourseStorageKey(currentUser);
-    localStorage.setItem(key, JSON.stringify(updated));
-    return true;
+    return false;
   };
 
   const submitAssignment = async (

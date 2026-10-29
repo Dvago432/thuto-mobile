@@ -79,12 +79,20 @@ export const SakaiSyncModal: React.FC<SakaiSyncModalProps> = ({ isOpen, onClose 
 
   const handleAddSingle = async (code: string, name: string) => {
     setLoading(true);
-    await registerNewCourse(code, name);
+    const ok = await registerNewCourse(code, name);
     setLoading(false);
-    setStatusMessage({ text: `Added ${code}: ${name} to your semester!` });
+    if (ok) {
+      setStatusMessage({ text: `Added ${code}: ${name} to your semester!` });
+    } else {
+      // Honest failure: the portal could not confirm this site for the student.
+      setStatusMessage({
+        text: `Could not read ${code} from Thuto right now (site may not exist under that ID, or the campus server is busy). Nothing was added.`,
+        isError: true,
+      });
+    }
     setTimeout(() => {
       setStatusMessage(null);
-    }, 1500);
+    }, 2500);
   };
 
   const handleReset = () => {
