@@ -93,8 +93,9 @@ function clearAttempts(eid: string): void {
 // session cookie (that was the original "login always succeeds" bug).
 type DirectResult =
   | { ok: true; data: any }
-  | { ok: false; kind: 'invalid' }
-  | { ok: false; kind: 'unreachable' };
+  | { ok: false; kind: 'invalid' }     // auth gate rejected the session
+  | { ok: false; kind: 'notfound' }    // session ACCEPTED, entity id did not match
+  | { ok: false; kind: 'unreachable' } // campus server down/slow/non-2xx;
 
 async function fetchDirectJson(
   path: string,
@@ -112,14 +113,21 @@ async function fetchDirectJson(
       signal: AbortSignal.timeout(15000),
     });
     // Sakai answers 401/403 (or a 302 back to the login page) when the session
-    // is anonymous or expired. Any other 2xx is real, authenticated data.
+    // is anonymous or expired — that is an auth-gate rejection, observed even
+    // unauthenticated on /direct/user. Any other 2xx is real, authed data.
     if (res.status === 401 || res.status === 403 || res.status === 302) {
       return { ok: false, kind: 'invalid' };
     }
+    // Concept: a 404 on an AUTH-GATED entity is NOT "portal unreachable".
+    // The auth gate (403) fires before entity resolution, so reaching 404
+    // proves the session was accepted and only the entity id did not match
+    // (e.g. keyed by internal UUID rather than eid on this Sakai build).
+    if (res.status === 404) {
+      return { ok: false, kind: 'notfound' };
+    }
     if (!res.ok) {
-      // 404 / 5xx from the portal: session may be fine but the entity is
-      // missing or the node is unhealthy. Treat as unreachable rather than
-      // claiming "wrong password".
+      // 5xx / odd statuses from the portal: node unhealthy.
+      console.warn(`[fetchDirectJson] ${path} -> status ${res.status}`);
       return { ok: false, kind: 'unreachable' };
     }
     const data = await res.json();
@@ -128,7 +136,8 @@ async function fetchDirectJson(
     // AbortError (timeout) or network failure — campus server down/slow.
     return { ok: false, kind: 'unreachable' };
   }
-}
+}
+
 // Helper to extract course code and clean title from Sakai site title or ID
 function parseCourseDetails(rawId: string, rawTitle: string) {
   const cleanId = rawId.replace(/^(site-)/i, '').trim();
@@ -162,6 +171,30 @@ function determineFaculty(code: string): string {
     return 'Faculty of Education';
   }
   return 'Faculty of Science & Technology';
+}
+
+// Sakai date fields arrive in several shapes across versions/contexts:
+//   { epochSecond: 1700000000 } | number (seconds OR ms) | "2026-02-14T08:00:00+00:00".
+// JavaScript's Date silently produces Invalid Date for mismatches and then
+// toISOString() THROWS a RangeError — which, inside the old parser, nuked the
+// entire course module list. This helper never throws: it resolves what it can
+// and returns an honest '' (no fabricated stand-in dates either).
+function safeIsoDate(value: any): string {
+  if (value === null || value === undefined || value === '') return '';
+  let d: Date | null = null;
+  if (typeof value === 'object' && value !== null) {
+    if (typeof value.epochSecond === 'number') d = new Date(value.epochSecond * 1000);
+    else if (typeof value.time === 'number' || typeof value.time === 'string') d = new Date(value.time);
+    else if (typeof value.ms === 'number') d = new Date(value.ms);
+  } else if (typeof value === 'number') {
+    // Heuristic: sakai often emits epoch-seconds; real ms epoch numbers are
+    // > 1e12. Guards against swapping scales.
+    d = new Date(value > 1e12 ? value : value * 1000);
+  } else {
+    d = new Date(value);
+  }
+  if (!d || isNaN(d.getTime())) return '';
+  return d.toISOString();
 }
 
 function parseSakaiContentCollection(siteId: string, code: string, rawItems: any[]) {
@@ -202,7 +235,7 @@ function parseSakaiContentCollection(siteId: string, code: string, rawItems: any
       fileName: name,
       fileSize: Number(f.size) || 1200000,
       fileType,
-      uploadedAt: f.modifiedDate ? new Date(f.modifiedDate).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
+      uploadedAt: safeIsoDate(f.modifiedDate) || safeIsoDate(f.creationDate) || '',
       topic: folderName,
       downloadUrl: f.url || `${SAKAI_BASE}/access/content${f.resourceId || ''}`,
       contentSnippet: `--- NATIONAL UNIVERSITY OF LESOTHO ---\nCourse: ${code}\nFolder: ${folderName}\nFile: ${name}\nDirect Sakai Link: ${f.url || SAKAI_BASE}`,
@@ -232,7 +265,7 @@ function parseSakaiAnnouncements(siteId: string, code: string, rawItems: any[]) 
     courseCode: code,
     title: a.title || 'Course Announcement',
     author: a.createdByDisplayName || 'Course Instructor',
-    date: a.createdOn ? new Date(a.createdOn).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
+    date: safeIsoDate(a.createdOn) || '',
     content: a.body ? a.body.replace(/<[^>]+>/g, '').trim() : 'No additional content text in notice.',
     isImportant: true,
     isRead: false,
@@ -241,28 +274,19 @@ function parseSakaiAnnouncements(siteId: string, code: string, rawItems: any[]) 
 
 function parseSakaiAssignments(siteId: string, code: string, rawItems: any[]) {
   if (!Array.isArray(rawItems) || rawItems.length === 0) return [];
-  return rawItems.map((a, idx) => {
-    let dueIso = new Date(Date.now() + 5 * 86400000).toISOString();
-    if (a.dueTime?.epochSecond) {
-      dueIso = new Date(a.dueTime.epochSecond * 1000).toISOString();
-    } else if (a.dueTime?.time) {
-      dueIso = new Date(a.dueTime.time).toISOString();
-    } else if (a.dueDate) {
-      dueIso = new Date(a.dueDate).toISOString();
-    }
-
-    return {
+  return rawItems.map((a, idx) => ({
       id: a.id || `assign-${code.toLowerCase()}-${idx}`,
       courseId: `course-${code.toLowerCase()}`,
       courseCode: code,
       title: a.title || `${code} Assignment`,
       description: a.instructions ? a.instructions.replace(/<[^>]+>/g, '').trim() : 'Review instructions and grading rubric on Thuto.',
-      dueDate: dueIso,
-      points: Number(a.maxGradePointDisplay) || Number(a.points) || 100,
+      // Honest deadline: only a date the portal actually provided, in a shape
+      // we could parse. No invented "due in 5 days" placeholders.
+      dueDate: safeIsoDate(a.dueTime?.epochSecond) || safeIsoDate(a.dueTime?.time) || safeIsoDate(a.dueDate) || safeIsoDate(a.dueTime) || '',
+      points: Number(a.maxGradePointDisplay) || Number(a.points) || 0,
       status: 'pending',
       allowSubmissions: true,
-    };
-  });
+    }));
 }
 
 // Sakai per-fetch header block — every /direct call must carry the student's
@@ -672,31 +696,46 @@ async function startServer() {
       sakaiCookie
     );
 
+    let degradedVerification = false;
     if (!verified.ok) {
-      recordFailedAttempt(cleanEid);
-      if (verified.kind === 'unreachable') {
+      if (verified.kind === 'notfound') {
+        // Concept: the auth gate (403) rejects anonymous sessions BEFORE entity
+        // lookup, so a 404 from the entity path proves the portal accepted the
+        // session — this Sakai build just keys user entities differently than
+        // by-eid. We proceed with an honest, minimal profile (no invented
+        // names) and flag it, rather than lying with "unreachable".
+        console.info(`[login] ${cleanEid}: user entity not retrievable by eid (404) — auth gate passed, treating as authenticated.`);
+        degradedVerification = true;
+      } else if (verified.kind === 'unreachable') {
+        recordFailedAttempt(cleanEid);
+        console.warn(`[login] ${cleanEid}: verification fetch failed (network/timeout) — failing closed.`);
         return res.status(502).json({
           success: false,
           authenticated: false,
           unreachable: true,
-          message: 'The portal accepted the connection but did not respond reliably. Please try again.',
+          message: 'Could not verify your sign-in in time — the campus link stalled. If your details are correct, try again shortly.',
+        });
+      } else {
+        recordFailedAttempt(cleanEid);
+        console.info(`[login] ${cleanEid}: auth gate rejected the session — invalid credentials.`);
+        return res.status(200).json({
+          success: true,
+          authenticated: false,
+          invalid: true,
+          message: 'Invalid student ID or password.',
         });
       }
-      return res.status(200).json({
-        success: true,
-        authenticated: false,
-        invalid: true,
-        message: 'Invalid student ID or password.',
-      });
     }
 
     // Step 3 — Build the profile from ONLY what the portal actually returned.
     // Sakai does not expose program / year of study / faculty, so we return
     // null and the UI shows an honest "not provided" — never an invention.
-    const p = verified.data || {};
+    const p = (verified.ok ? verified.data : null) || {};
     const profile = {
       id: p.id || `student-${cleanEid}`,
       studentNumber: cleanEid,
+      // When the user entity can't be keyed by eid, we refuse to invent a
+      // display name — the student's own ID is the honest label.
       fullName: p.displayName || cleanEid,
       program: null,
       year: null,
@@ -704,6 +743,9 @@ async function startServer() {
       email: p.email || `${cleanEid}@nul.ls`,
       isDemo: false,
     };
+    if (degradedVerification) {
+      (profile as any).profileIncomplete = true;
+    }
 
     clearAttempts(cleanEid);
 
@@ -723,7 +765,9 @@ async function startServer() {
       sessionToken,
       user: profile,
     });
-  });  // 3. Concept: authenticated extraction via the gateway session
+  });
+
+  // 3. Concept: authenticated extraction via the gateway session
   //
   // Every sync endpoint now requires the opaque session token issued at login
   // (X-Session-Token header). The gateway looks up the REAL Sakai cookie in
