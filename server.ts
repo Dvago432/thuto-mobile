@@ -211,6 +211,26 @@ function parseSakaiContentCollection(siteId: string, code: string, rawItems: any
 
   // Group by container folder hierarchy (e.g. "Unit 1", "Week 2 - Slides", "Tutorials")
   const folderMap = new Map<string, any[]>();
+
+  // Concept: the real filename lives at the END of the resource path —
+  // Sakai's content entities often do NOT carry a `name` field (or carry an
+  // empty one), which is why everything used to render as "Course Document".
+  // The URL the portal itself gives us IS the authoritative source:
+  //   /access/content/group/CS3400_2026_27/<folder>/CS3400 Trees .... pdf
+  function realResourceName(f: any): string {
+    const raw =
+      (f.url || f.resourceId || f.container || '')
+        .split('/')
+        .filter(Boolean)
+        .pop() || '';
+    if (!raw) return '';
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return raw;
+    }
+  }
+
   for (const f of files) {
     const container = f.container || '';
     const parts = container.split('/').filter(Boolean);
@@ -220,7 +240,8 @@ function parseSakaiContentCollection(siteId: string, code: string, rawItems: any
       folderMap.set(folderName, []);
     }
 
-    const name = f.name || 'Course Document';
+    const name = realResourceName(f);
+    if (!name) continue; // cannot even identify the file — exclude rather than stub it
     const lowerName = name.toLowerCase();
     const fileType = lowerName.endsWith('.pdf') ? 'pdf'
       : lowerName.endsWith('.docx') || lowerName.endsWith('.doc') ? 'docx'
@@ -233,7 +254,9 @@ function parseSakaiContentCollection(siteId: string, code: string, rawItems: any
       courseId: `course-${code.toLowerCase()}`,
       title: name,
       fileName: name,
-      fileSize: Number(f.size) || 1200000,
+      // Honest size: the portal's byte count when it provides one, otherwise
+      // 0 (the UI treats 0 as 'unknown'). The old fake 1.2MB default lied.
+      fileSize: Number(f.size) || 0,
       fileType,
       uploadedAt: safeIsoDate(f.modifiedDate) || safeIsoDate(f.creationDate) || '',
       topic: folderName,
@@ -924,7 +947,76 @@ async function startServer() {
     }
   });
 
-  // 5. Dropbox file upload & listing endpoint (sakai.dropbox)
+  // 5. Concept: gateway download proxy (offline-first materials)
+  //
+  // Resources on Thuto are only reachable WITH the student's portal session —
+  // a direct link like /access/content/group/... is useless in a plain
+  // browser. Whatever we cached before was just a text *placeholder*. This
+  // endpoint streams the REAL bytes: the client presents its opaque session
+  // token, the gateway looks up the true Sakai cookie, attaches it, and pipes
+  // the file through. The result is stored in IndexedDB so the material is
+  // readable offline.
+  //
+  // Security: we only ever fetch from the Sakai base under /access/content (a
+  // fixed prefix — no arbitrary URL passthrough / no SSRF), and we reject path
+  // traversal attempts. A 50MB ceiling keeps abuse bounded.
+  app.get('/api/sakai/download', async (req: Request, res: Response) => {
+    const session = requireSession(req);
+    if (!session) {
+      return res.status(401).json({
+        error: 'session-expired',
+        message: 'Sign in again to download course material.',
+      });
+    }
+
+    const requestedUrl = String(req.query.url || '');
+    const prefix = `${SAKAI_BASE}/access/content/`;
+    if (!requestedUrl.startsWith(prefix)) {
+      return res.status(400).json({ error: 'Only Thuto /access/content resources can be downloaded.' });
+    }
+    const resourcePath = requestedUrl.slice(prefix.length);
+    if (!resourcePath || resourcePath.includes('..') || resourcePath.includes('%2e') || resourcePath.includes('%2E')) {
+      return res.status(400).json({ error: 'Invalid resource path.' });
+    }
+
+    try {
+      const upstream = await fetch(requestedUrl, {
+        headers: sakaiHeaders(session.sakaiCookie),
+        redirect: 'manual',
+        signal: AbortSignal.timeout(60000),
+      });
+
+      if (upstream.status === 401 || upstream.status === 403 || upstream.status === 302) {
+        return res.status(401).json({
+          error: 'session-expired',
+          message: 'The portal rejected the download session. Sign in again.',
+        });
+      }
+      if (upstream.status === 404) {
+        return res.status(404).json({ error: 'The file no longer exists on the portal (it may have been replaced by the lecturer).' });
+      }
+      if (!upstream.ok) {
+        console.warn(`[download] portal status ${upstream.status} for ${resourcePath}`);
+        return res.status(502).json({ error: 'Portal did not serve the file. Campus server may be busy.' });
+      }
+
+      const declaredSize = Number(upstream.headers.get('content-length') || 0);
+      if (declaredSize > 50 * 1024 * 1024) {
+        return res.status(413).json({ error: 'File exceeds the 50MB mobile-download limit.' });
+      }
+
+      const buffer = Buffer.from(await upstream.arrayBuffer());
+      const contentType = upstream.headers.get('content-type') || 'application/octet-stream';
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Length', String(buffer.length));
+      res.status(200).send(buffer);
+    } catch (e: any) {
+      console.warn('[download] failed:', e?.name || e?.message);
+      res.status(502).json({ error: 'Download failed — the campus link stalled. Try again.' });
+    }
+  });
+
+  // 6. Dropbox file upload & listing endpoint (sakai.dropbox)
   app.get('/api/sakai/dropbox/:courseCode', (req: Request, res: Response) => {
     const code = req.params.courseCode.toUpperCase();
     const items = DROPBOX_STORE[code] || [];

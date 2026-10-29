@@ -135,8 +135,11 @@ export interface CachedFileRecord {
   courseCode: string;
   title: string;
   fileName: string;
-  fileSize: number;
+  fileSize: number; // real byte size as served by the portal (0 = unknown)
   fileType: 'pdf' | 'pptx' | 'docx' | 'code' | 'zip';
   cachedAt: string;
-  content: string; // Text / base64 preview content
+  // Either a base64 data-URI of the REAL downloaded file (the gateway streams
+  // actual bytes) or a text fragment cached as a fallback.
+  content: string;
+  mimeType?: string; // e.g. application/pdf — drives the viewer's render path
 }

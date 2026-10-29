@@ -33,8 +33,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     cachedFiles, 
     searchQuery, 
     setSearchQuery,
-    selectedFaculty,
-    setSelectedFaculty,
     isLoadingCourses,
     reloadEnrolledCourses
   } = useCourses();
@@ -54,22 +52,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     courses.reduce((acc, c) => acc + c.progressPercent, 0) / (courses.length || 1)
   );
 
-  const faculties = ['All', 'Science & Tech', 'Law', 'Social Sciences', 'Health Sciences'];
-
-  const filteredCourses = courses.filter((course) => {
-    const matchesSearch = 
-      course.code.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      course.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      course.instructor.toLowerCase().includes(searchQuery.toLowerCase());
-
-    if (!matchesSearch) return false;
-    if (selectedFaculty === 'All') return true;
-    if (selectedFaculty === 'Science & Tech') return course.faculty.includes('Science');
-    if (selectedFaculty === 'Law') return course.faculty.includes('Law');
-    if (selectedFaculty === 'Social Sciences') return course.faculty.includes('Social');
-    if (selectedFaculty === 'Health Sciences') return course.faculty.includes('Health');
-    return true;
-  });
+  // Search-only filtering: the faculty chip row was removed in favor of the
+  // search bar, which already matches code, title, or lecturer.
+  const filteredCourses = courses.filter((course) => 
+    course.code.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    course.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    course.instructor.toLowerCase().includes(searchQuery.toLowerCase())
+  );
 
   const handleManualSync = () => {
     setShowSyncModal(true);
@@ -225,7 +214,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       )}
 
-      {/* Search & Faculty Filter Bar */}
+      {/* Search Bar */}
       <div className="space-y-3">
         <div className="relative">
           <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -236,23 +225,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             placeholder="Search courses by code, title, or lecturer..."
             className="w-full bg-slate-900 border border-slate-800 rounded-2xl pl-10 pr-4 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500/60 transition"
           />
-        </div>
-
-        {/* Faculty Category Filter (Clean unboxed segmented buttons) */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar text-xs">
-          {faculties.map((fac) => (
-            <button
-              key={fac}
-              onClick={() => setSelectedFaculty(fac)}
-              className={`px-3 py-1.5 rounded-xl whitespace-nowrap transition-all font-medium text-xs active:scale-95 ${
-                selectedFaculty === fac
-                  ? 'bg-amber-500 text-slate-950 font-semibold shadow-sm'
-                  : 'bg-slate-900/80 border border-slate-800 text-slate-300 hover:text-white hover:bg-slate-800'
-              }`}
-            >
-              {fac}
-            </button>
-          ))}
         </div>
       </div>
 

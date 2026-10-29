@@ -11,11 +11,9 @@ interface CourseContextType {
   cachedFiles: CachedFileRecord[];
   storageUsage: { totalBytes: number; fileCount: number };
   searchQuery: string;
-  selectedFaculty: string;
   isLoadingCourses: boolean;
   setActiveCourseId: (courseId: string | null) => void;
   setSearchQuery: (query: string) => void;
-  setSelectedFaculty: (faculty: string) => void;
   downloadResourceForOffline: (resource: CourseResource, courseCode: string) => Promise<boolean>;
   deleteOfflineResource: (resourceId: string) => Promise<void>;
   submitAssignment: (assignmentId: string, submissionNotes: string, fileName?: string) => Promise<boolean>;
@@ -96,7 +94,6 @@ export const CourseProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     fileCount: 0,
   });
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedFaculty, setSelectedFaculty] = useState('All');
 
   // Load and refresh offline cached files from IndexedDB
   const refreshCacheState = useCallback(async () => {
@@ -232,24 +229,73 @@ export const CourseProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setActiveCourseIdState(courseId);
   };
 
+  // Concept: offline downloads are REAL bytes or nothing.
+  //
+  // The old version cached `contentSnippet` — a hand-written text stub — and
+  // marked the resource "Downloaded", which taught students they had the
+  // material when they only had our description of it. Now we call the
+  // gateway's download proxy, which streams the actual file (it attaches the
+  // Sakai cookie server-side), base64-encode it into a data-URI, and store
+  // that in IndexedDB. Any failure returns false — the UI keeps the resource
+  // un-downloaded rather than pretending.
   const downloadResourceForOffline = async (resource: CourseResource, courseCode: string): Promise<boolean> => {
-    console.info(`[CourseProvider] Caching resource for offline: ${resource.title}`);
+    console.info(`[CourseProvider] Downloading real material: ${resource.title} (${resource.downloadUrl})`);
     try {
+      const token = getStoredSessionToken();
+      if (!token) {
+        console.warn('[CourseProvider] No gateway session token — cannot download portal material.');
+        return false;
+      }
+
+      const res = await fetch(`/api/sakai/download?url=${encodeURIComponent(resource.downloadUrl)}`, {
+        headers: token ? { 'X-Session-Token': token } : {},
+      });
+
+      if (res.status === 401) {
+        console.warn('[CourseProvider] Download rejected: portal session expired. Sign in again.');
+        return false;
+      }
+      if (res.status === 404) {
+        console.warn('[CourseProvider] Download rejected: file no longer exists on the portal.');
+        return false;
+      }
+      if (!res.ok) {
+        const errData = await res.json().catch(() => null);
+        console.warn('[CourseProvider] Download failed:', res.status, errData?.error || '');
+        return false;
+      }
+
+      // ArrayBuffer -> base64 data-URI. Chunked to avoid call-stack limits on
+      // large PDFs (String.fromCharCode.apply has a ~64k argument ceiling).
+      const buffer = await res.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+      const CHUNK = 8192;
+      for (let i = 0; i < bytes.length; i += CHUNK) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+      }
+      const mime = res.headers.get('content-type') || 'application/octet-stream';
+      const dataUri = `data:${mime};base64,${btoa(binary)}`;
+
       await offlineStorage.saveFile({
         id: resource.id,
         courseId: resource.courseId,
         courseCode,
         title: resource.title,
         fileName: resource.fileName,
-        fileSize: resource.fileSize,
+        // Real byte count as served by the gateway (the sync-time fileSize
+        // from the portal's directory listing can be 0 when unreported).
+        fileSize: bytes.length,
         fileType: resource.fileType,
         cachedAt: new Date().toISOString(),
-        content: resource.contentSnippet || `Offline cached material: ${resource.title}`,
+        content: dataUri,
+        mimeType: mime,
       });
+      console.info(`[CourseProvider] Material cached offline: ${resource.title} (${bytes.length} bytes, ${mime})`);
       await refreshCacheState();
       return true;
     } catch (e) {
-      console.warn('[CourseProvider] Failed caching file offline:', e);
+      console.warn('[CourseProvider] Failed downloading material offline:', e);
       return false;
     }
   };
@@ -442,11 +488,9 @@ export const CourseProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         cachedFiles,
         storageUsage,
         searchQuery,
-        selectedFaculty,
         isLoadingCourses,
         setActiveCourseId,
         setSearchQuery,
-        setSelectedFaculty,
         downloadResourceForOffline,
         deleteOfflineResource,
         submitAssignment,

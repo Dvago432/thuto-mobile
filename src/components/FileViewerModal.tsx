@@ -7,10 +7,30 @@ interface FileViewerModalProps {
   onClose: () => void;
 }
 
+// Concept: the viewer renders whatever was REALLY downloaded, and says so.
+//
+// Phase 3 records carry `content` as a base64 data-URI of the actual portal
+// file plus its `mimeType` — we embed PDFs (iframe) and images (img) and
+// offer a download link for everything else (pptx/docx/zip, which a browser
+// sandbox cannot render). Records cached before Phase 3 (or plain text
+// caches) have no mimeType: they keep the original text reader.
+function isRealBinary(file: CachedFileRecord): boolean {
+  return Boolean(file.mimeType) && file.content.startsWith('data:');
+}
+
+function mimeCategory(mime: string): 'pdf' | 'image' | 'other' {
+  if (mime.includes('pdf')) return 'pdf';
+  if (mime.startsWith('image/')) return 'image';
+  return 'other';
+}
+
 export const FileViewerModal: React.FC<FileViewerModalProps> = ({ file, onClose }) => {
   const [copied, setCopied] = React.useState(false);
 
   if (!file) return null;
+
+  const binary = isRealBinary(file);
+  const category = binary ? mimeCategory(file.mimeType!) : 'other';
 
   const handleCopyText = () => {
     navigator.clipboard.writeText(file.content);
@@ -19,6 +39,9 @@ export const FileViewerModal: React.FC<FileViewerModalProps> = ({ file, onClose 
   };
 
   const formatSize = (bytes: number) => {
+    if (!bytes || bytes <= 0) return 'Size unknown';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   };
 
@@ -58,40 +81,84 @@ export const FileViewerModal: React.FC<FileViewerModalProps> = ({ file, onClose 
         <div className="px-4 py-2.5 bg-slate-950/30 border-b border-slate-800/60 flex items-center justify-between text-xs text-slate-400">
           <span className="flex items-center gap-1.5">
             <BookOpen className="w-3.5 h-3.5 text-amber-400" />
-            Secure Offline Sandbox Reader
+            {binary ? `Real file from Thuto (${file.mimeType})` : 'Offline Text Reader'}
           </span>
-          <button
-            onClick={handleCopyText}
-            className="flex items-center gap-1 text-amber-400 hover:text-amber-300 transition font-medium"
-          >
-            {copied ? (
-              <>
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> Copied Text
-              </>
-            ) : (
-              <>
-                <Copy className="w-3.5 h-3.5" /> Copy Study Notes
-              </>
-            )}
-          </button>
+          {binary ? (
+            // Concept: an honest escape hatch — pptx/docx/zip (or a PDF the
+            // embedded viewer cannot render on some Android WebViews) can be
+            // saved straight from the cached data-URI.
+            <a
+              href={file.content}
+              download={file.fileName}
+              className="flex items-center gap-1 text-amber-400 hover:text-amber-300 transition font-medium"
+            >
+              <DownloadCloud className="w-3.5 h-3.5" /> Save / Open Externally
+            </a>
+          ) : (
+            <button
+              onClick={handleCopyText}
+              className="flex items-center gap-1 text-amber-400 hover:text-amber-300 transition font-medium"
+            >
+              {copied ? (
+                <>
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> Copied Text
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3.5 h-3.5" /> Copy Study Notes
+                </>
+              )}
+            </button>
+          )}
         </div>
 
         {/* Document Content Body */}
-        <div className="flex-1 overflow-y-auto p-5 space-y-4 font-mono text-xs text-slate-200 leading-relaxed bg-slate-950/40">
-          <div className="p-4 rounded-xl bg-slate-900 border border-slate-800/80 shadow-inner">
-            <pre className="whitespace-pre-wrap font-sans text-xs text-slate-300 leading-relaxed">
-              {file.content}
-            </pre>
+        {binary ? (
+          <div className="flex-1 overflow-y-auto bg-slate-950/40">
+            {category === 'pdf' && (
+              <iframe
+                src={file.content}
+                title={file.title}
+                className="w-full h-full min-h-[420px] bg-white"
+              />
+            )}
+            {category === 'image' && (
+              <div className="p-5 flex items-center justify-center">
+                <img
+                  src={file.content}
+                  alt={file.title}
+                  className="max-w-full max-h-[60vh] rounded-xl border border-slate-800"
+                />
+              </div>
+            )}
+            {category === 'other' && (
+              <div className="p-6 space-y-4 text-center">
+                <DownloadCloud className="w-10 h-10 text-slate-600 mx-auto" />
+                <p className="text-xs text-slate-300 leading-relaxed max-w-xs mx-auto">
+                  {file.fileName} was downloaded from the portal and is stored offline on
+                  this device. This format ({file.mimeType}) cannot be previewed inside the
+                  app — use “Save / Open Externally” above to open it.
+                </p>
+              </div>
+            )}
           </div>
-
-          <div className="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800 text-xs text-slate-400 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <DownloadCloud className="w-4 h-4 text-slate-500" />
-              <span>Cached locally at {new Date(file.cachedAt).toLocaleDateString()}</span>
+        ) : (
+          <div className="flex-1 overflow-y-auto p-5 space-y-4 font-mono text-xs text-slate-200 leading-relaxed bg-slate-950/40">
+            <div className="p-4 rounded-xl bg-slate-900 border border-slate-800/80 shadow-inner">
+              <pre className="whitespace-pre-wrap font-sans text-xs text-slate-300 leading-relaxed">
+                {file.content}
+              </pre>
             </div>
-            <span className="font-mono text-[11px] text-slate-500">{file.fileName}</span>
+
+            <div className="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800 text-xs text-slate-400 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <DownloadCloud className="w-4 h-4 text-slate-500" />
+                <span>Cached locally at {new Date(file.cachedAt).toLocaleDateString()}</span>
+              </div>
+              <span className="font-mono text-[11px] text-slate-500">{file.fileName}</span>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Modal Footer */}
         <div className="p-4 border-t border-slate-800 bg-slate-950/80 flex items-center justify-end gap-3">

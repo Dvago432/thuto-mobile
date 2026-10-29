@@ -67,8 +67,17 @@ export const CourseDetailView: React.FC<CourseDetailViewProps> = ({
       await deleteOfflineResource(resource.id);
     } else {
       setDownloadingId(resource.id);
-      await downloadResourceForOffline(resource, activeCourse.code);
+      const ok = await downloadResourceForOffline(resource, activeCourse.code);
       setDownloadingId(null);
+      if (!ok) {
+        // Honest failure: the bytes never arrived, so we must NOT let the UI
+        // show the resource as downloaded. Tell the student exactly that.
+        setSyncStatusMsg({
+          text: `Could not download ${resource.fileName} from Thuto (portal session may have expired, the campus link stalled, or the file is not served). Nothing was cached.`,
+          isError: true,
+        });
+        setTimeout(() => setSyncStatusMsg(null), 4500);
+      }
     }
   };
 
