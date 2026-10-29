@@ -97,9 +97,15 @@ export interface StudentUser {
   id: string;
   studentNumber: string;
   fullName: string;
-  program: string;
-  year: number;
-  faculty: Faculty;
+  /**
+   * program / year / faculty are NOT part of the Sakai user profile. The portal
+   * only reliably returns eid, displayName and email. We mark these as nullable
+   * so we never fabricate academic details we cannot verify against a real source.
+   * Demo mode (mock data) supplies real values; live mode shows an honest "—".
+   */
+  program: string | null;
+  year: number | null;
+  faculty: Faculty | null;
   email: string;
   avatarUrl?: string;
   isDemo: boolean;

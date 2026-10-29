@@ -4,23 +4,36 @@ import { useAuth } from '../context/AuthContext';
 
 export const LoginView: React.FC = () => {
   const { login } = useAuth();
-  const [studentId, setStudentId] = useState('202304918');
-  const [password, setPassword] = useState('••••••••••••');
+  const [studentId, setStudentId] = useState('');
+  const [password, setPassword] = useState('');
   const [staySignedIn, setStaySignedIn] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleStandardLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!studentId.trim()) return;
+    if (!studentId.trim() || !password) {
+      setError('Enter your student ID and portal password.');
+      return;
+    }
+    setError(null);
     setLoading(true);
-    await login(studentId, password, false, staySignedIn);
+    const result = await login(studentId, password, false, staySignedIn);
     setLoading(false);
+    if (!result.success) {
+      // Surface the gateway's honest reason. No silent fallback, no invented user.
+      setError(result.message);
+    }
   };
 
   const handleDemoLogin = async () => {
+    setError(null);
     setLoading(true);
-    await login('202304918', '', true, true);
+    const result = await login('202304918', '', true, true);
     setLoading(false);
+    if (!result.success) {
+      setError(result.message);
+    }
   };
 
   return (
@@ -98,6 +111,17 @@ export const LoginView: React.FC = () => {
                 No relogging
               </span>
             </div>
+
+            {/* Error banner — shown only when a real failure occurs */}
+            {error && (
+              <div
+                role="alert"
+                className="flex items-start gap-2 p-3 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-[11px] leading-relaxed"
+              >
+                <span className="mt-px shrink-0">⚠️</span>
+                <span>{error}</span>
+              </div>
+            )}
 
             <button
               type="submit"

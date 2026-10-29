@@ -1,5 +1,6 @@
 import express from 'express';
 import type { Request, Response } from 'express';
+import crypto from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -10,7 +11,124 @@ const SAKAI_BASE = 'https://thuto.nul.ls';
 
 // In-memory student dropbox store (persists per session / course site)
 const DROPBOX_STORE: Record<string, any[]> = {};
+// ---------------------------------------------------------------------------
+// Concept: Server-side session store
+//
+// The gateway authenticates once against Sakai, then holds the
+// SAKAI2SESSIONID cookie in its OWN memory. The browser never sees that
+// cookie — we mint an opaque UUID token and hand THAT to the client. Sync
+// endpoints accept the token, look up the real Sakai cookie server-side, and
+// attach it to upstream calls. This kills the "Cookie: SAKAI2SESSIONID=live"
+// bug (the old code accepted a sessionId from the request body and defaulted
+// to the literal string 'live' when the client omitted it — so every real
+// Sakai fetch was silently rejected as an anonymous session).
+//
+// Accepted trade-off: an in-memory Map means a server restart drops sessions
+// and students re-login. Honest and understandable — far better than shipping
+// a live portal cookie into localStorage where any XSS could steal it.
+// ---------------------------------------------------------------------------
+interface SakaiSession {
+  sakaiCookie: string;   // real SAKAI2SESSIONID value — never leaves the server
+  eid: string;           // student login id
+  createdAt: number;
+}
+const sessions = new Map<string, SakaiSession>();
+const SESSION_TTL_MS = 1000 * 60 * 60 * 8; // 8 hours — mirrors a typical portal session
 
+function getSession(token: string | undefined | null): SakaiSession | null {
+  if (!token) return null;
+  const s = sessions.get(token);
+  if (!s) return null;
+  if (Date.now() - s.createdAt > SESSION_TTL_MS) {
+    sessions.delete(token);
+    return null;
+  }
+  return s;
+}
+
+// ---------------------------------------------------------------------------
+// Concept: Rate limiting (in-memory sliding window, per key)
+//
+// Any public login endpoint gets brute-forced within hours of going live.
+// We cap failed attempts per student id over a rolling window. A production
+// deployment would move this to a shared store (Redis) so it survives
+// restarts and multiple gateway instances.
+// ---------------------------------------------------------------------------
+const RATE_WINDOW_MS = 1000 * 60 * 15; // 15 minutes
+const RATE_MAX_ATTEMPTS = 10;          // max failed attempts per eid per window
+const loginAttempts = new Map<string, number[]>();
+
+function isRateLimited(eid: string): boolean {
+  const now = Date.now();
+  const recent = (loginAttempts.get(eid) || []).filter((t) => now - t < RATE_WINDOW_MS);
+  loginAttempts.set(eid, recent);
+  return recent.length >= RATE_MAX_ATTEMPTS;
+}
+function recordFailedAttempt(eid: string): void {
+  const recent = loginAttempts.get(eid) || [];
+  recent.push(Date.now());
+  loginAttempts.set(eid, recent);
+}
+function clearAttempts(eid: string): void {
+  loginAttempts.delete(eid);
+}
+
+// ---------------------------------------------------------------------------
+// Concept: strict three-outcome auth taxonomy
+//
+// Every auth path resolves to one of exactly three honest answers:
+//   - authenticated: true   (portal confirmed the credentials)
+//   - authenticated: false  (portal REJECTED the credentials)      -> "invalid"
+//   - unreachable: true     (we could not reach/verify the portal) -> "unreachable"
+//
+// The old code had a fourth, dishonest path: on timeout it returned
+// mode 'live-cached' with an invented user (fail-open). Gone. A portal you
+// cannot reach is NOT the same as a portal that said yes.
+// ---------------------------------------------------------------------------
+
+// Fetch a /direct/* JSON entity using a live session cookie. Returns a
+// discriminated outcome so the caller can tell "authenticated" /
+// "bad credentials" / "portal unreachable" apart. We never infer auth from
+// cookie presence — a FAILED Sakai login still issues a fresh anonymous
+// session cookie (that was the original "login always succeeds" bug).
+type DirectResult =
+  | { ok: true; data: any }
+  | { ok: false; kind: 'invalid' }
+  | { ok: false; kind: 'unreachable' };
+
+async function fetchDirectJson(
+  path: string,
+  sakaiCookie: string
+): Promise<DirectResult> {
+  try {
+    const res = await fetch(`${SAKAI_BASE}${path}`, {
+      method: 'GET',
+      headers: {
+        'Cookie': `SAKAI2SESSIONID=${sakaiCookie}; JSESSIONID=${sakaiCookie}`,
+        'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ThutoMobile/1.0',
+      },
+      redirect: 'manual',
+      signal: AbortSignal.timeout(15000),
+    });
+    // Sakai answers 401/403 (or a 302 back to the login page) when the session
+    // is anonymous or expired. Any other 2xx is real, authenticated data.
+    if (res.status === 401 || res.status === 403 || res.status === 302) {
+      return { ok: false, kind: 'invalid' };
+    }
+    if (!res.ok) {
+      // 404 / 5xx from the portal: session may be fine but the entity is
+      // missing or the node is unhealthy. Treat as unreachable rather than
+      // claiming "wrong password".
+      return { ok: false, kind: 'unreachable' };
+    }
+    const data = await res.json();
+    return { ok: true, data };
+  } catch {
+    // AbortError (timeout) or network failure — campus server down/slow.
+    return { ok: false, kind: 'unreachable' };
+  }
+}
 // Helper to extract course code and clean title from Sakai site title or ID
 function parseCourseDetails(rawId: string, rawTitle: string) {
   const cleanId = rawId.replace(/^(site-)/i, '').trim();
@@ -335,11 +453,21 @@ async function startServer() {
     }
   });
 
-  // 2. Sakai authentication proxy with deep site extraction
+  // 2. Sakai authentication proxy (Phase 1.5: fail-closed, verified, minimal)
+  //
+  // Login now does ONLY authentication — the old version ran the entire
+  // course-site deep-extraction (site.json + per-site content/announcements/
+  // assignments for every enrolled site) inline in this request, which is why
+  // logins took 30+ seconds and why a flaky page read broke the whole login.
+  // Course extraction is its own endpoint (/api/sakai/extract-courses) and is
+  // reworked to use the server-held session in the next phase.
   app.post('/api/sakai/login', async (req: Request, res: Response) => {
-    const { eid, pw, isDemo } = req.body;
+    const { eid, pw, isDemo } = req.body || {};
 
-    if (isDemo || eid === '202304918' || String(eid).toLowerCase().includes('demo')) {
+    // Demo survives ONLY as an explicit, opt-in flag. The old magic triggers
+    // ("eid contains demo", or '202304918' with no password) are removed: a
+    // real student ID typed into this box is always treated as a real login.
+    if (isDemo) {
       return res.json({
         success: true,
         authenticated: true,
@@ -358,124 +486,130 @@ async function startServer() {
       });
     }
 
-    try {
-      const controller = new AbortController();
-      // Generous 18-second timeout for Roma campus network handshake
-      const timeoutId = setTimeout(() => controller.abort(), 18000);
+    const cleanEid = String(eid || '').trim();
+    if (!cleanEid || !pw) {
+      return res.status(400).json({
+        success: false,
+        authenticated: false,
+        invalidInput: true,
+        message: 'Student ID and password are required.',
+      });
+    }
 
+    if (isRateLimited(cleanEid)) {
+      return res.status(429).json({
+        success: false,
+        authenticated: false,
+        rateLimited: true,
+        message: 'Too many sign-in attempts. Please wait before trying again.',
+      });
+    }
+
+    // Step 1 — POST the standard Sakai login form. We capture whatever session
+    // cookie comes back, but we never treat its presence as success: a FAILED
+    // login still issues a fresh anonymous cookie.
+    let sakaiCookie: string | null = null;
+    try {
       const params = new URLSearchParams();
-      params.append('eid', eid || '');
-      params.append('pw', pw || '');
+      params.append('eid', cleanEid);
+      params.append('pw', pw);
       params.append('submit', 'Login');
 
       const loginResponse = await fetch(`${SAKAI_BASE}/portal/xlogin`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Mobile) ThutoMobile/1.0',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ThutoMobile/1.0',
           'Origin': SAKAI_BASE,
           'Referer': `${SAKAI_BASE}/portal`,
         },
         body: params.toString(),
         redirect: 'manual',
-        signal: controller.signal,
+        signal: AbortSignal.timeout(18000),
       });
 
-      clearTimeout(timeoutId);
       const cookies = loginResponse.headers.get('set-cookie') || '';
       const sessionMatch = cookies.match(/(?:SAKAI2SESSIONID|JSESSIONID)=([^;]+)/i);
-      const sessionId = sessionMatch ? sessionMatch[1] : null;
-
-      if (loginResponse.status === 302 || sessionId) {
-        let extractedCourses: any[] = [];
-        try {
-          // Fetch enrolled sites
-          const siteRes = await fetch(`${SAKAI_BASE}/direct/site.json`, {
-            headers: {
-              'Cookie': `SAKAI2SESSIONID=${sessionId}; JSESSIONID=${sessionId}`,
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ThutoMobile/1.0',
-            },
-          });
-
-          if (siteRes.ok) {
-            const data = await siteRes.json();
-            const collection = data.site_collection || [];
-
-            // For each valid course site, fetch materials, announcements, and assignments
-            for (const item of collection) {
-              if (item.id && item.id !== '!gateway' && !item.id.startsWith('~')) {
-                const { code, name } = parseCourseDetails(item.id, item.title || item.id);
-                
-                // Deep fetch site materials and deadlines
-                const details = await fetchSakaiSiteDetails(sessionId || '', item.id, code);
-
-                extractedCourses.push(
-                  createCourseObject(
-                    item.id,
-                    code,
-                    name,
-                    'live_thuto',
-                    `🟢 Live data synced directly from Sakai (${item.id})`,
-                    details.realModules,
-                    details.realAnnouncements,
-                    details.realAssignments
-                  )
-                );
-              }
-            }
-          }
-        } catch (siteErr) {
-          console.warn('Failed querying site.json from Thuto:', siteErr);
-        }
-
-        return res.json({
-          success: true,
-          authenticated: true,
-          mode: 'live',
-          sessionId,
-          courses: extractedCourses.length > 0 ? extractedCourses : null,
-          fallbackNotice: extractedCourses.length === 0 
-            ? 'Logged in to Thuto, but course files/site list query timed out from Roma server. Showing cached courses with live sync option.'
-            : undefined,
-          user: {
-            id: `student-${eid}`,
-            studentNumber: eid,
-            fullName: `Student ${eid}`,
-            program: 'Enrolled Degree Program',
-            year: 3,
-            faculty: 'Faculty of Science & Technology',
-            email: `${eid}@nul.ls`,
-            isDemo: false,
-          },
-        });
-      }
-
-      return res.json({
-        success: true,
-        authenticated: false,
-        error: 'Invalid student ID or portal password provided by Sakai server.',
-      });
+      sakaiCookie = sessionMatch ? sessionMatch[1] : null;
     } catch {
-      return res.json({
-        success: true,
-        authenticated: true,
-        mode: 'live-cached',
-        fallbackNotice: '⚠️ University portal server at Roma (197.220.158.29) timed out during live authentication. Admitted into persistent local session with cached offline replica.',
-        user: {
-          id: `student-${eid}`,
-          studentNumber: eid,
-          fullName: `Student ${eid}`,
-          program: 'Enrolled Degree Program',
-          year: 3,
-          faculty: 'Faculty of Science & Technology',
-          email: `${eid}@nul.ls`,
-          isDemo: false,
-        },
+      recordFailedAttempt(cleanEid);
+      return res.status(502).json({
+        success: false,
+        authenticated: false,
+        unreachable: true,
+        message: 'Could not reach the university portal. It may be down or blocking this network.',
       });
     }
-  });
 
-  // 3. Sync Single Course Site Live on Demand
+    if (!sakaiCookie) {
+      recordFailedAttempt(cleanEid);
+      return res.status(200).json({
+        success: true,
+        authenticated: false,
+        invalid: true,
+        message: 'Invalid student ID or password.',
+      });
+    }
+
+    // Step 2 — VERIFY by accessing a protected resource: the portal serving
+    // this student's own user record proves the session is genuinely theirs.
+    const verified = await fetchDirectJson(
+      `/direct/user/${encodeURIComponent(cleanEid)}.json`,
+      sakaiCookie
+    );
+
+    if (!verified.ok) {
+      recordFailedAttempt(cleanEid);
+      if (verified.kind === 'unreachable') {
+        return res.status(502).json({
+          success: false,
+          authenticated: false,
+          unreachable: true,
+          message: 'The portal accepted the connection but did not respond reliably. Please try again.',
+        });
+      }
+      return res.status(200).json({
+        success: true,
+        authenticated: false,
+        invalid: true,
+        message: 'Invalid student ID or password.',
+      });
+    }
+
+    // Step 3 — Build the profile from ONLY what the portal actually returned.
+    // Sakai does not expose program / year of study / faculty, so we return
+    // null and the UI shows an honest "not provided" — never an invention.
+    const p = verified.data || {};
+    const profile = {
+      id: p.id || `student-${cleanEid}`,
+      studentNumber: cleanEid,
+      fullName: p.displayName || cleanEid,
+      program: null,
+      year: null,
+      faculty: null,
+      email: p.email || `${cleanEid}@nul.ls`,
+      isDemo: false,
+    };
+
+    clearAttempts(cleanEid);
+
+    // Step 4 — Store the REAL Sakai cookie server-side; hand the client an
+    // opaque token it can later present for sync calls (Phase 2).
+    const sessionToken = crypto.randomUUID();
+    sessions.set(sessionToken, {
+      sakaiCookie,
+      eid: cleanEid,
+      createdAt: Date.now(),
+    });
+
+    return res.status(200).json({
+      success: true,
+      authenticated: true,
+      mode: 'live',
+      sessionToken,
+      user: profile,
+    });
+  });  // 3. Sync Single Course Site Live on Demand
   app.post('/api/sakai/sync-site', async (req: Request, res: Response) => {
     const { siteId, code, sessionId } = req.body;
     if (!siteId || !code) {

@@ -81,7 +81,10 @@ export const ProfileSettingsView: React.FC = () => {
                 Student No: {user?.studentNumber}
               </p>
               <p className="text-xs text-slate-300 mt-0.5">
-                {user?.program}
+                {/* Sakai does not expose program of study — say so honestly instead of blank. */}
+                {user?.program || (
+                  <span className="text-slate-500 italic">Program not provided by portal</span>
+                )}
               </p>
             </div>
           </div>
@@ -90,7 +93,11 @@ export const ProfileSettingsView: React.FC = () => {
         <div className="pt-3 border-t border-slate-700/60 grid grid-cols-2 gap-3 text-xs text-slate-300">
           <div>
             <span className="text-slate-400 block text-[11px]">Faculty</span>
-            <span className="font-medium">{user?.faculty}</span>
+            <span className="font-medium">
+              {user?.faculty || (
+                <span className="text-slate-500 italic font-normal">Not provided by portal</span>
+              )}
+            </span>
           </div>
           <div>
             <span className="text-slate-400 block text-[11px]">Campus Email</span>

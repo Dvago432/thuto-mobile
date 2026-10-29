@@ -1,6 +1,16 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { StudentUser } from '../types';
 
+/**
+ * Result of a login attempt. A discriminated union so the UI can never
+ * "accidentally" treat a failure as success — the shape itself enforces it.
+ *   success:true   -> user is set
+ *   success:false  -> a real reason (invalid / unreachable / rate-limited)
+ */
+export type LoginResult =
+  | { success: true }
+  | { success: false; reason: 'invalid' | 'unreachable' | 'rate-limited' | 'unknown'; message: string };
+
 interface AuthContextType {
   user: StudentUser | null;
   isAuthenticated: boolean;
@@ -8,7 +18,14 @@ interface AuthContextType {
   isPersistent: boolean;
   hasPIN: boolean;
   portalMode: 'live' | 'demo';
-  login: (studentId: string, password?: string, isDemo?: boolean, staySignedIn?: boolean) => Promise<boolean>;
+  /** Opaque gateway session token (the real Sakai cookie stays server-side). */
+  sessionToken: string | null;
+  login: (
+    studentId: string,
+    password?: string,
+    isDemo?: boolean,
+    staySignedIn?: boolean
+  ) => Promise<LoginResult>;
   logout: () => void;
   lockApp: () => void;
   unlockWithPIN: (pin: string) => boolean;
@@ -19,6 +36,10 @@ interface AuthContextType {
 const AUTH_USER_KEY = 'thuto_persistent_user_v1';
 const AUTH_PIN_KEY = 'thuto_security_pin_v1';
 const AUTH_SETTINGS_KEY = 'thuto_auth_settings_v1';
+// Opaque gateway token (NOT the Sakai cookie — that stays server-side). It
+// proves "this browser == that authenticated session" to the gateway when the
+// student triggers course syncs.
+const AUTH_SESSION_TOKEN_KEY = 'thuto_session_token_v1';
 
 const DEMO_STUDENT: StudentUser = {
   id: 'student-202304918',
@@ -64,6 +85,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   });
 
   const [portalMode, setPortalMode] = useState<'live' | 'demo'>('demo');
+  const [sessionToken, setSessionToken] = useState<string | null>(() => {
+    return localStorage.getItem(AUTH_SESSION_TOKEN_KEY);
+  });
+
+  useEffect(() => {
+    if (sessionToken) {
+      localStorage.setItem(AUTH_SESSION_TOKEN_KEY, sessionToken);
+    } else {
+      localStorage.removeItem(AUTH_SESSION_TOKEN_KEY);
+    }
+  }, [sessionToken]);
 
   useEffect(() => {
     if (user && isPersistent) {
@@ -78,69 +110,75 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     password?: string,
     isDemo = false,
     staySignedIn = true
-  ): Promise<boolean> => {
-    let authenticatedUser: StudentUser;
-
-    if (isDemo || studentId.toLowerCase().includes('demo') || (studentId === '202304918' && !password)) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      authenticatedUser = { ...DEMO_STUDENT };
+  ): Promise<LoginResult> => {
+    // Demo is an EXPLICIT, client-only path. It never touches the network and
+    // never fabricates a "live" session — it is clearly labelled demo mode.
+    if (isDemo) {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const demoUser: StudentUser = { ...DEMO_STUDENT };
       setPortalMode('demo');
-    } else {
-      try {
-        const response = await fetch('/api/sakai/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ eid: studentId.trim(), pw: password, isDemo: false }),
-        });
-        const data = await response.json();
-        if (data.user) {
-          authenticatedUser = data.user;
-          setPortalMode('live');
-        } else {
-          authenticatedUser = {
-            id: `student-${studentId.trim()}`,
-            studentNumber: studentId.trim(),
-            fullName: `Student ${studentId.trim()}`,
-            program: 'Enrolled Degree Program',
-            year: 3,
-            faculty: 'Faculty of Science & Technology',
-            email: `${studentId.trim()}@nul.ls`,
-            isDemo: false,
-          };
-          setPortalMode('live');
-        }
-
-        if (data.courses && Array.isArray(data.courses) && data.courses.length > 0) {
-          window.dispatchEvent(new CustomEvent('thuto-courses-updated', { detail: data.courses }));
-        }
-      } catch {
-        authenticatedUser = {
-          id: `student-${studentId.trim()}`,
-          studentNumber: studentId.trim(),
-          fullName: `Student ${studentId.trim()}`,
-          program: 'Enrolled Degree Program',
-          year: 2,
-          faculty: 'Faculty of Science & Technology',
-          email: `${studentId.trim()}@nul.ls`,
-          isDemo: false,
-        };
-        setPortalMode('live');
+      setSessionToken(null);
+      setIsPersistent(staySignedIn);
+      localStorage.setItem(AUTH_SETTINGS_KEY, JSON.stringify({ staySignedIn }));
+      if (staySignedIn) {
+        localStorage.setItem(AUTH_USER_KEY, JSON.stringify(demoUser));
       }
+      setUser(demoUser);
+      setIsLocked(false);
+      return { success: true };
     }
 
-    setIsPersistent(staySignedIn);
-    localStorage.setItem(AUTH_SETTINGS_KEY, JSON.stringify({ staySignedIn }));
-    if (staySignedIn) {
-      localStorage.setItem(AUTH_USER_KEY, JSON.stringify(authenticatedUser));
+    // Live portal login. There is NO fallback that invents a user — if the
+    // gateway says no, we surface the reason and stay logged out (fail-closed).
+    try {
+      const response = await fetch('/api/sakai/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ eid: studentId.trim(), pw: password }),
+      });
+      const data = await response.json();
+
+      if (data.authenticated && data.user) {
+        const liveUser: StudentUser = { ...data.user, isDemo: false };
+        setPortalMode('live');
+        setSessionToken(data.sessionToken || null);
+        setIsPersistent(staySignedIn);
+        localStorage.setItem(AUTH_SETTINGS_KEY, JSON.stringify({ staySignedIn }));
+        if (staySignedIn) {
+          localStorage.setItem(AUTH_USER_KEY, JSON.stringify(liveUser));
+        }
+        setUser(liveUser);
+        setIsLocked(false);
+        return { success: true };
+      }
+
+      // The gateway told us the login failed — respect it verbatim.
+      if (data.rateLimited) {
+        return { success: false, reason: 'rate-limited', message: data.message || 'Too many attempts. Try again later.' };
+      }
+      if (data.unreachable) {
+        return { success: false, reason: 'unreachable', message: data.message || 'Could not reach the university portal.' };
+      }
+      return {
+        success: false,
+        reason: 'invalid',
+        message: data.message || 'Invalid student ID or password.',
+      };
+    } catch {
+      // Network error reaching OUR OWN gateway (not the portal). Report honestly.
+      return {
+        success: false,
+        reason: 'unreachable',
+        message: 'Could not reach the login service. Check your connection and try again.',
+      };
     }
-    setUser(authenticatedUser);
-    setIsLocked(false);
-    return true;
   };
 
   const logout = () => {
     setUser(null);
     setIsLocked(false);
+    setSessionToken(null);
+    setPortalMode('demo');
     localStorage.removeItem(AUTH_USER_KEY);
   };
 
@@ -179,6 +217,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isPersistent,
         hasPIN,
         portalMode,
+        sessionToken,
         login,
         logout,
         lockApp,

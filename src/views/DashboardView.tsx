@@ -117,8 +117,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <GraduationCap className="w-3.5 h-3.5" />
                 {user?.program || 'Undergraduate Portal'}
               </span>
-              <span className="text-slate-500">·</span>
-              <span className="text-xs text-slate-300">Year {user?.year || 3}</span>
+              {/* Only render a year if the portal actually supplied one — never fabricate it. */}
+              {user?.year != null && (
+                <>
+                  <span className="text-slate-500">·</span>
+                  <span className="text-xs text-slate-300">Year {user.year}</span>
+                </>
+              )}
             </div>
             
             <h1 className="text-xl md:text-2xl font-display font-bold text-white tracking-tight">
