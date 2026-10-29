@@ -7,3 +7,6 @@ coverage/
 .env*
 !.env.example
 .aistudio/
+
+# this repo is bun-managed (bun.lock); never commit npm's lockfile
+package-lock.json
