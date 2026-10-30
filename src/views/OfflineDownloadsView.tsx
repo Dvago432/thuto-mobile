@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { useCourses } from '../context/CourseContext';
 import { CachedFileRecord } from '../types';
+import { formatBytes } from '../utils/format';
 
 interface OfflineDownloadsViewProps {
   onOpenOfflineFile: (file: CachedFileRecord) => void;
@@ -24,12 +25,7 @@ export const OfflineDownloadsView: React.FC<OfflineDownloadsViewProps> = ({
   const [selectedCourseFilter, setSelectedCourseFilter] = useState('All');
   const [confirmClear, setConfirmClear] = useState(false);
 
-  const formatSize = (bytes: number) => {
-    if (bytes < 1024 * 1024) {
-      return (bytes / 1024).toFixed(0) + ' KB';
-    }
-    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-  };
+  const formatSize = formatBytes;
 
   const coursesWithCache = ['All', ...Array.from(new Set(cachedFiles.map((f) => f.courseCode)))];
 

@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useCourses } from '../context/CourseContext';
+import { formatBytes } from '../utils/format';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import { SakaiSyncModal } from '../components/SakaiSyncModal';
 
@@ -55,9 +56,7 @@ export const ProfileSettingsView: React.FC = () => {
     setQuickPIN(null);
   };
 
-  const formatSize = (bytes: number) => {
-    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-  };
+  const formatSize = formatBytes;
 
   return (
     <div className="pb-24 pt-3 max-w-4xl mx-auto px-4 space-y-5 animate-in fade-in duration-200">

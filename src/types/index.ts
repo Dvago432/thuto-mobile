@@ -143,3 +143,10 @@ export interface CachedFileRecord {
   content: string;
   mimeType?: string; // e.g. application/pdf — drives the viewer's render path
 }
+
+// An in-memory PREVIEW: same shape so one viewer renders both sources, plus
+// the ephemeral contract — `content` is a blob: URL that must be revoked on
+// close, and NOTHING has been written to IndexedDB.
+export interface PreviewFileRecord extends CachedFileRecord {
+  ephemeral: true;
+}

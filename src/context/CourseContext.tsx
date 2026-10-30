@@ -1,5 +1,5 @@
-import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
-import { Course, Assignment, CourseResource, CachedFileRecord, StudentUser, Faculty } from '../types';
+import React, { createContext, useContext, useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { Course, Assignment, CourseResource, CachedFileRecord, PreviewFileRecord, StudentUser } from '../types';
 import { MOCK_COURSES } from '../data/mockCourses';
 import { offlineStorage } from '../services/storage';
 import { notificationService } from '../services/notifications';
@@ -16,6 +16,10 @@ interface CourseContextType {
   setSearchQuery: (query: string) => void;
   downloadResourceForOffline: (resource: CourseResource, courseCode: string) => Promise<boolean>;
   deleteOfflineResource: (resourceId: string) => Promise<void>;
+  previewResource: (resource: CourseResource, courseCode: string) => Promise<PreviewFileRecord | null>;
+  autoSyncCourseIfStale: (course: Course) => void;
+  autoSyncStatus: Record<string, 'running' | 'failed'>;
+  clearAutoSyncStatus: (courseCode: string) => void;
   submitAssignment: (assignmentId: string, submissionNotes: string, fileName?: string) => Promise<boolean>;
   markAnnouncementAsRead: (courseId: string, announcementId: string) => void;
   clearAllOfflineStorage: () => Promise<void>;
@@ -174,6 +178,15 @@ export const CourseProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       refreshCacheState();
     };
 
+    // Concept: login is a state TRANSITION, not a mount. The sweep at mount
+    // runs before any session exists (that is exactly why materials never
+    // auto-loaded after fresh logins). AuthContext now announces when auth
+    // has settled; the full course sweep re-runs at that moment.
+    const handleAuthSettled = () => {
+      console.info('[CourseProvider] Auth settled — re-running the course sweep after login.');
+      reloadEnrolledCourses();
+    };
+
     const handleCoursesUpdated = (e: Event) => {
       const customEvent = e as CustomEvent<Course[]>;
       if (customEvent.detail && Array.isArray(customEvent.detail)) {
@@ -187,10 +200,12 @@ export const CourseProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     window.addEventListener('thuto-cache-updated', handleCacheUpdated);
     window.addEventListener('thuto-courses-updated', handleCoursesUpdated);
+    window.addEventListener('thuto-auth-settled', handleAuthSettled);
 
     return () => {
       window.removeEventListener('thuto-cache-updated', handleCacheUpdated);
       window.removeEventListener('thuto-courses-updated', handleCoursesUpdated);
+      window.removeEventListener('thuto-auth-settled', handleAuthSettled);
     };
   }, [refreshCacheState, reloadEnrolledCourses]);
 
@@ -304,6 +319,169 @@ export const CourseProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     await offlineStorage.removeFile(resourceId);
     await refreshCacheState();
   };
+
+  // Concept: previewing and caching are DIFFERENT journeys to the same bytes.
+  //
+  // Reviewer complaint: the only way to read a material was to cache it — a
+  // needless one-way commitment when you just want to check a class handout.
+  // A preview fetches through the same gateway proxy but wraps the response
+  // in an in-memory Blob and hands the viewer an object URL. Nothing touches
+  // IndexedDB; the viewer revokes the URL on close. Caching stays its own
+  // explicit, opt-in action (the download button — plus "Save offline" inside
+  // the preview).
+  const previewResource = async (
+    resource: CourseResource,
+    courseCode: string
+  ): Promise<PreviewFileRecord | null> => {
+    console.info(`[CourseProvider] Preview requested: ${resource.title} (${resource.downloadUrl})`);
+    try {
+      const token = getStoredSessionToken();
+      if (!token) {
+        console.warn('[CourseProvider] No gateway session token — cannot preview portal material.');
+        return null;
+      }
+
+      const res = await fetch(`/api/sakai/download?url=${encodeURIComponent(resource.downloadUrl)}`, {
+        headers: { 'X-Session-Token': token },
+      });
+
+      // Same three-outcome discipline as the cache path — never fake content.
+      if (res.status === 401) {
+        console.warn('[CourseProvider] Preview rejected: portal session expired. Sign in again.');
+        return null;
+      }
+      if (res.status === 404) {
+        console.warn('[CourseProvider] Preview rejected: file no longer exists on the portal.');
+        return null;
+      }
+      if (!res.ok) {
+        const errData = await res.json().catch(() => null);
+        console.warn('[CourseProvider] Preview failed:', res.status, errData?.error || '');
+        return null;
+      }
+
+      const blob = await res.blob();
+      const mime = blob.type || res.headers.get('content-type') || 'application/octet-stream';
+      const url = URL.createObjectURL(blob);
+      console.info(`[CourseProvider] Preview ready: ${resource.title} (${blob.size} bytes, ${mime}) — nothing stored.`);
+      return {
+        id: resource.id,
+        courseId: resource.courseId,
+        courseCode,
+        title: resource.title,
+        fileName: resource.fileName,
+        fileSize: blob.size, // the true byte count, straight from the served file
+        fileType: resource.fileType,
+        cachedAt: '', // unused for ephemeral records; nothing was cached
+        content: url,
+        mimeType: mime,
+        ephemeral: true,
+      };
+    } catch (e) {
+      console.warn('[CourseProvider] Preview failed:', e);
+      return null;
+    }
+  };
+
+  // Concept: freshness without friction — with guardrails against hammering
+  // the campus server.
+  //
+  // Students were forced to tap "Sync Site" to see new material because the
+  // per-course sweep only happened manually. Now opening a course quietly
+  // refreshes it IF its last attempt is older than the cooldown. The
+  // timestamp is written BEFORE the attempt so failures also cool down — a
+  // dead portal is probed at most once per hour per course, and any failure
+  // is surfaced honestly by the autoSyncStatus chip (never silent staleness).
+  const AUTO_SYNC_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour per course
+
+  // 'running'/'failed' state per course code, purely for UI truth-telling.
+  const [autoSyncStatus, setAutoSyncStatus] = useState<Record<string, 'running' | 'failed'>>({});
+  // In-flight guard so rapid re-renders / re-opens can't stack duplicate syncs.
+  const autoSyncInFlight = useRef<Set<string>>(new Set());
+
+  const autoSyncCourseIfStale = useCallback((course: Course) => {
+    if (!course) return;
+    const code = course.code;
+    const currentUser = getInitialUser();
+    if (!currentUser || currentUser.isDemo) return; // demo workspace has no portal to refresh from
+    if (autoSyncInFlight.current.has(code)) return;
+
+    try {
+      const last = Number(localStorage.getItem(`thuto_autosync_${code}`) || '0');
+      if (Date.now() - last < AUTO_SYNC_COOLDOWN_MS) return; // fresh enough; manual Sync still available
+    } catch {
+      // storage unavailable — err on the side of data freshness and proceed
+    }
+
+    // Mark in-flight BEFORE any await so concurrent triggers are impossible.
+    autoSyncInFlight.current.add(code);
+    setAutoSyncStatus((prev) => ({ ...prev, [code]: 'running' }));
+    try {
+      localStorage.setItem(`thuto_autosync_${code}`, String(Date.now()));
+    } catch {
+      // non-fatal — cooldown simply won't persist across sessions
+    }
+
+    (async () => {
+      let refreshed = false;
+      let status = 0;
+      try {
+        const token = getStoredSessionToken();
+        if (!token) {
+          console.warn(`[CourseProvider:autoSync] No session token for ${code} — skipping background refresh.`);
+        } else {
+          const res = await fetch('/api/sakai/sync-site', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Session-Token': token,
+            },
+            body: JSON.stringify({ siteId: course.siteId || code, code }),
+          });
+          status = res.status;
+          if (res.ok) {
+            const data = await res.json();
+            if (data.course) {
+              setCourses((prev) => {
+                const next = prev.map((c) => (c.code === data.course.code ? data.course : c));
+                const cu = getInitialUser();
+                const key = getCourseStorageKey(cu);
+                localStorage.setItem(key, JSON.stringify(next));
+                return next;
+              });
+              refreshed = true;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(`[CourseProvider:autoSync] Network error syncing ${code}:`, err);
+      }
+
+      if (refreshed) {
+        console.info(`[CourseProvider:autoSync] ${code} refreshed in the background.`);
+        // Chip disappears — the student can trust the data is current.
+        setAutoSyncStatus((prev) => {
+          const { [code]: _drop, ...rest } = prev;
+          return rest;
+        });
+      } else {
+        // Honest failure state — the UI renders this as a visible chip,
+        // so "showing older data" is never a silent condition.
+        console.warn(`[CourseProvider:autoSync] Background refresh failed for ${code} (status ${status}).`);
+        setAutoSyncStatus((prev) => ({ ...prev, [code]: 'failed' }));
+      }
+      autoSyncInFlight.current.delete(code);
+    })();
+  }, []);
+
+  // Manual sync success clears the failure chip — the student forced a
+  // refresh and it worked, so the stale-data warning no longer tells truth.
+  const clearAutoSyncStatus = useCallback((courseCode: string) => {
+    setAutoSyncStatus((prev) => {
+      const { [courseCode]: _drop, ...rest } = prev;
+      return rest;
+    });
+  }, []);
 
   const clearAllOfflineStorage = async (): Promise<void> => {
     await offlineStorage.clearAll();
@@ -493,6 +671,10 @@ export const CourseProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setSearchQuery,
         downloadResourceForOffline,
         deleteOfflineResource,
+        previewResource,
+        autoSyncCourseIfStale,
+        autoSyncStatus,
+        clearAutoSyncStatus,
         submitAssignment,
         markAnnouncementAsRead,
         clearAllOfflineStorage,

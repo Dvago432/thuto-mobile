@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   ArrowLeft, 
   Download, 
@@ -9,6 +9,7 @@ import {
   BookOpen, 
   Send, 
   FileCode,
+  Eye,
   FolderLock,
   Upload,
   AlertTriangle,
@@ -17,7 +18,9 @@ import {
   Megaphone
 } from 'lucide-react';
 import { useCourses } from '../context/CourseContext';
-import { CourseResource, CachedFileRecord, DropboxItem } from '../types';
+import { CourseResource, CachedFileRecord, PreviewFileRecord, DropboxItem } from '../types';
+import { formatBytes } from '../utils/format';
+import { FileViewerModal } from '../components/FileViewerModal';
 
 interface CourseDetailViewProps {
   onBack: () => void;
@@ -35,12 +38,22 @@ export const CourseDetailView: React.FC<CourseDetailViewProps> = ({
     cachedFiles, 
     downloadResourceForOffline, 
     deleteOfflineResource,
+    previewResource,
+    autoSyncCourseIfStale,
+    autoSyncStatus,
+    clearAutoSyncStatus,
     markAnnouncementAsRead,
     updateCourse 
   } = useCourses();
 
   const [activeTab, setActiveTab] = useState<'modules' | 'assignments' | 'announcements' | 'dropbox' | 'syllabus'>('modules');
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [previewFile, setPreviewFile] = useState<PreviewFileRecord | null>(null);
+  const [previewingId, setPreviewingId] = useState<string | null>(null);
+  const [savingOffline, setSavingOffline] = useState(false);
+  // The CourseResource behind an open preview — "Save offline" needs the
+  // editorial projectile (downloadUrl etc.), not just the rendered bytes.
+  const previewSourceRef = useRef<CourseResource | null>(null);
   const [showUploadDropbox, setShowUploadDropbox] = useState(false);
   const [dropboxFileName, setDropboxFileName] = useState('');
   const [dropboxNote, setDropboxNote] = useState('');
@@ -49,6 +62,21 @@ export const CourseDetailView: React.FC<CourseDetailViewProps> = ({
   const [dropboxSuccess, setDropboxSuccess] = useState(false);
   const [isSyncingSite, setIsSyncingSite] = useState(false);
   const [syncStatusMsg, setSyncStatusMsg] = useState<{ text: string; isError?: boolean } | null>(null);
+
+  // Concept: freshness without friction. Opening a course quietly checks
+  // whether its data is older than the cooldown (1h, resilient across
+  // sessions) and, if so, refreshes in the background — the manual Sync
+  // buttons remain as the always-available fallback.
+  //
+  // NOTE: declared before the conditional early-return below — React hook
+  // order must be stable across renders regardless of `activeCourse`.
+  const courseId = activeCourse?.id;
+  useEffect(() => {
+    if (!courseId) return;
+    autoSyncCourseIfStale(activeCourse);
+    // Deps reduced to the course identity: an update from a sync re-renders,
+    // and must not re-trigger the (cooldown-guarded) refresh loop.
+  }, [courseId]);
 
   if (!activeCourse) {
     return (
@@ -60,6 +88,57 @@ export const CourseDetailView: React.FC<CourseDetailViewProps> = ({
       </div>
     );
   }
+
+  // Concept: opening a material defaults to a LOOK, not a commitment.
+  // Cached files open from IndexedDB instantly; anything uncached streams a
+  // live preview through the gateway (no storage). The download button is
+  // the explicit "keep this" action.
+  const handleOpenMaterial = async (res: CourseResource) => {
+    const cached = cachedFiles.find((f) => f.id === res.id);
+    if (cached) {
+      onOpenOfflineFile(cached);
+      return;
+    }
+    if (previewingId) return; // one stream at a time — the proxy is generous but not infinite
+    setPreviewingId(res.id);
+    const rec = await previewResource(res, activeCourse.code);
+    setPreviewingId(null);
+    if (rec) {
+      previewSourceRef.current = res;
+      setPreviewFile(rec);
+    } else {
+      // Honest failure: no fabricated text page pretending to be a preview.
+      setSyncStatusMsg({
+        text: `Could not load a preview of ${res.fileName} from Thuto (the session may have expired or the campus link stalled). "Save offline" may still work, or try again shortly.`,
+        isError: true,
+      });
+      setTimeout(() => setSyncStatusMsg(null), 4500);
+    }
+  };
+
+  // One-tap journey preview -> offline cache, straight from the viewer.
+  const handleSavePreviewOffline = async () => {
+    const resource = previewSourceRef.current;
+    if (!resource) return;
+    setSavingOffline(true);
+    const ok = await downloadResourceForOffline(resource, activeCourse.code);
+    setSavingOffline(false);
+    if (ok) {
+      // Close the preview — the file now lives in IndexedDB and reopens from
+      // "Read" whenever needed; closing also revokes the in-memory blob.
+      setPreviewFile(null);
+      setSyncStatusMsg({
+        text: `${resource.fileName} saved for offline study.`,
+      });
+      setTimeout(() => setSyncStatusMsg(null), 3500);
+    } else {
+      setSyncStatusMsg({
+        text: `Could not save ${resource.fileName} offline (session may have expired or the campus link stalled). The preview stays open.`,
+        isError: true,
+      });
+      setTimeout(() => setSyncStatusMsg(null), 4500);
+    }
+  };
 
   const handleDownloadToggle = async (resource: CourseResource) => {
     const isCached = cachedFiles.some((f) => f.id === resource.id);
@@ -121,6 +200,8 @@ export const CourseDetailView: React.FC<CourseDetailViewProps> = ({
       const data = await res.json();
       if (data.course) {
         updateCourse(data.course);
+        // A manual success makes any background-failure warning obsolete.
+        clearAutoSyncStatus(activeCourse.code);
         setSyncStatusMsg({
           text: `Synchronized ${data.course.modules.length} folders, ${data.course.announcements.length} notices, and ${data.course.assignments.length} assignments!`,
         });
@@ -182,9 +263,7 @@ export const CourseDetailView: React.FC<CourseDetailViewProps> = ({
     }
   };
 
-  const formatFileSize = (bytes: number) => {
-    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-  };
+  const formatFileSize = formatBytes;
 
   return (
     <div className="pb-24 pt-3 max-w-4xl mx-auto px-4 space-y-4 animate-in fade-in duration-200">
@@ -251,6 +330,27 @@ export const CourseDetailView: React.FC<CourseDetailViewProps> = ({
         }`}>
           <CheckCircle2 className="w-4 h-4 shrink-0" />
           <span>{syncStatusMsg.text}</span>
+        </div>
+      )}
+
+      {/* Background auto-refresh truth chips (concept: staleness is never
+          a silent condition — the student always knows what they're reading) */}
+      {autoSyncStatus[activeCourse.code] === 'running' && (
+        <div className="p-2.5 rounded-2xl bg-slate-900/70 border border-slate-800 text-[11px] text-slate-300 flex items-center gap-2">
+          <RefreshCw className="w-3.5 h-3.5 shrink-0 animate-spin text-amber-400" />
+          <span>
+            Refreshing {activeCourse.code} from Thuto in the background — you're reading the
+            cached data until it completes. No need to wait.
+          </span>
+        </div>
+      )}
+      {autoSyncStatus[activeCourse.code] === 'failed' && (
+        <div className="p-2.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-200 flex items-center gap-2">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          <span>
+            The last background refresh failed (session may have expired, or the campus link
+            stalled) — materials may be out of date. Manual "Sync Site" is still available.
+          </span>
         </div>
       )}
 
@@ -369,14 +469,7 @@ export const CourseDetailView: React.FC<CourseDetailViewProps> = ({
                         className="p-3 rounded-2xl bg-slate-950/60 border border-slate-800/80 flex items-center justify-between gap-3 hover:border-slate-700 transition"
                       >
                         <div
-                          onClick={() => {
-                            const cached = cachedFiles.find((f) => f.id === res.id);
-                            if (cached) {
-                              onOpenOfflineFile(cached);
-                            } else {
-                              handleDownloadToggle(res);
-                            }
-                          }}
+                          onClick={() => handleOpenMaterial(res)}
                           className="flex items-center gap-2.5 min-w-0 cursor-pointer flex-1"
                         >
                           <div className="w-8 h-8 rounded-xl bg-slate-900 text-amber-400 flex items-center justify-center shrink-0">
@@ -406,7 +499,10 @@ export const CourseDetailView: React.FC<CourseDetailViewProps> = ({
                           </div>
                         </div>
 
-                        {/* Actions */}
+                        {/* Actions — an explicit LOOK (eye: streams the real
+                            file, stores nothing) vs KEEP (download: caches it
+                            for offline study). Tapping a file can no longer
+                            silently commit disk space. */}
                         <div className="flex items-center gap-1.5 shrink-0">
                           {isCached ? (
                             <button
@@ -418,7 +514,20 @@ export const CourseDetailView: React.FC<CourseDetailViewProps> = ({
                             >
                               <BookOpen className="w-3.5 h-3.5" /> Read
                             </button>
-                          ) : null}
+                          ) : (
+                            <button
+                              onClick={() => handleOpenMaterial(res)}
+                              disabled={previewingId === res.id}
+                              title="Preview — streams the real file, stores nothing"
+                              className="min-h-[36px] w-[36px] flex items-center justify-center rounded-xl transition active:scale-95 bg-slate-900 border border-slate-700/80 text-slate-300 hover:text-amber-300 hover:bg-slate-800"
+                            >
+                              {previewingId === res.id ? (
+                                <div className="w-3.5 h-3.5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+                              ) : (
+                                <Eye className="w-4 h-4" />
+                              )}
+                            </button>
+                          )}
 
                           <button
                             onClick={() => handleDownloadToggle(res)}
@@ -760,6 +869,15 @@ export const CourseDetailView: React.FC<CourseDetailViewProps> = ({
           </div>
         </div>
       )}
+      {/* Live Material Preview — LOOK without KEEP. Ephemeral blob renders
+          here; "Save offline" inside the viewer converts it into a cached
+          copy. Closing revokes the in-memory URL. */}
+      <FileViewerModal
+        file={previewFile}
+        onClose={() => setPreviewFile(null)}
+        onSaveOffline={handleSavePreviewOffline}
+        savingOffline={savingOffline}
+      />
     </div>
   );
 };

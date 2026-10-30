@@ -125,6 +125,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       setUser(demoUser);
       setIsLocked(false);
+      window.dispatchEvent(new Event('thuto-auth-settled'));
       return { success: true };
     }
 
@@ -149,6 +150,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
         setUser(liveUser);
         setIsLocked(false);
+        // Concept: cross-provider signaling. CourseProvider mounts BEFORE this
+        // provider, so its mount-time course sweep ran with no session and
+        // skipped — that is why students had to sync materials manually after
+        // every login. Rather than coupling the providers together, login
+        // completion is announced; CourseProvider listens and re-runs its sweep.
+        window.dispatchEvent(new Event('thuto-auth-settled'));
         return { success: true };
       }
 
