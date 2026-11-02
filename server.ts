@@ -118,10 +118,12 @@ async function fetchDirectJson(
     if (res.status === 401 || res.status === 403 || res.status === 302) {
       return { ok: false, kind: 'invalid' };
     }
-    // Concept: a 404 on an AUTH-GATED entity is NOT "portal unreachable".
-    // The auth gate (403) fires before entity resolution, so reaching 404
-    // proves the session was accepted and only the entity id did not match
-    // (e.g. keyed by internal UUID rather than eid on this Sakai build).
+    // Concept: a 404 here means the ENTITY was not found — the portal
+    // resolves entities BEFORE its auth gate (probed live 2026-11-01:
+    // /direct/user/<nonexistent-eid>.json answers 404 even fully anonymous).
+    // A 404 therefore carries NO authentication signal of its own. Login
+    // proof comes from readSessionIdentity (the session OWNER), never from
+    // this status. Callers may use 'notfound' as "profile unavailable".
     if (res.status === 404) {
       return { ok: false, kind: 'notfound' };
     }
@@ -135,6 +137,62 @@ async function fetchDirectJson(
   } catch {
     // AbortError (timeout) or network failure — campus server down/slow.
     return { ok: false, kind: 'unreachable' };
+  }
+}
+
+// Concept: identity is the anchor of authentication — the cookie is only a
+// candidate, never proof.
+//
+// Probed live (2026-11-01) against thuto.nul.ls:
+//   * a FAILED /portal/xlogin still issues a fresh ANONYMOUS
+//     SAKAI2SESSIONID — so "we got a cookie" proves nothing, and the old
+//     `!sakaiCookie -> invalid` gate fired for exactly zero attempts;
+//   * Sakai resolves entities BEFORE its auth gate: /direct/user/<nonexistent>
+//     answers 404 even fully anonymous. So no /direct/user/... status can
+//     ever stand in as login proof (the old 404-as-authenticated branch was
+//     a fail-open hole that authenticated arbitrary random credentials);
+//   * /direct/session.json answers 200 for anonymous AND authenticated hits,
+//     and exposes the session OWNER — userId/userEid null for anonymous,
+//     the signed-in user's id for real sessions.
+async function readSessionIdentity(
+  sakaiCookie: string
+): Promise<
+  | { kind: 'ok'; userEid: string | null; userId: string | null }
+  | { kind: 'unreachable' }
+> {
+  try {
+    const res = await fetch(`${SAKAI_BASE}/direct/session.json`, {
+      headers: {
+        'Cookie': `SAKAI2SESSIONID=${sakaiCookie}; JSESSIONID=${sakaiCookie}`,
+        'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ThutoMobile/1.0',
+      },
+      redirect: 'manual',
+      signal: AbortSignal.timeout(15000),
+    });
+    if (res.status === 401 || res.status === 403 || res.status === 302) {
+      // The auth gate refused outright — owner stays anonymous.
+      console.warn(`[login] session check: auth gate returned ${res.status} — session is anonymous.`);
+      return { kind: 'ok', userEid: null, userId: null };
+    }
+    if (!res.ok) {
+      console.warn(`[login] session check: portal status ${res.status} — treating as unreachable.`);
+      return { kind: 'unreachable' };
+    }
+    const data = await res.json();
+    // Sakai returns the session either as a bare entity or wrapped in a
+    // one-element session_collection (shape seen on this deployment).
+    const s =
+      (data && (data.session_entity || (Array.isArray(data.session_collection) ? data.session_collection[0] : null))) ||
+      null;
+    return {
+      kind: 'ok',
+      userEid: (s && (s.userEid ?? s.eid)) || null,
+      userId: (s && s.userId) || null,
+    };
+  } catch {
+    // AbortError (timeout) or network failure — campus server down/slow.
+    return { kind: 'unreachable' };
   }
 }
 
@@ -712,45 +770,62 @@ async function startServer() {
       });
     }
 
-    // Step 2 — VERIFY by accessing a protected resource: the portal serving
-    // this student's own user record proves the session is genuinely theirs.
+    // Step 2 — VERIFY BY IDENTITY, not by cookie presence.
+    //
+    // The failed-login probe (2026-11-01) showed the portal hands out an
+    // anonymous SAKAI2SESSIONID even for rejected credentials — so the old
+    // "does the cookie exist?" gate never rejected anything, and the old
+    // "404 on the user entity means the session was accepted" branch
+    // authenticated ANY random credentials (nonexistent eids 404 anonymously
+    // too). The only portal-level statement of who a session belongs to is
+    // /direct/session.json: anonymous sessions report userId/userEid null;
+    // real ones report the signed-in user. Accept ONLY an exact match with
+    // the credentials the student submitted.
+    const identity = await readSessionIdentity(sakaiCookie);
+
+    if (identity.kind === 'unreachable') {
+      recordFailedAttempt(cleanEid);
+      console.warn(`[login] ${cleanEid}: session verification fetch failed (network/timeout) — failing closed.`);
+      return res.status(502).json({
+        success: false,
+        authenticated: false,
+        unreachable: true,
+        message: 'Could not verify your sign-in in time — the campus link stalled. If your details are correct, try again shortly.',
+      });
+    }
+
+    const identityMatched = identity.userEid === cleanEid || identity.userId === cleanEid;
+    if (!identityMatched) {
+      recordFailedAttempt(cleanEid);
+      console.info(
+        `[login] ${cleanEid}: portal says this session belongs to '${identity.userEid ?? identity.userId ?? 'anonymous'}' — credentials rejected.`
+      );
+      return res.status(200).json({
+        success: true,
+        authenticated: false,
+        invalid: true,
+        message: 'Invalid student ID or password.',
+      });
+    }
+
+    // Step 3 — PROFILE ENRICHMENT ONLY. Fetching the user entity AFTER auth:
+    // The user-entity fetch is now PROFILE ENRICHMENT ONLY: its 404 means the
+    // entity is not keyed by eid on this build (or the profile read failed) —
+    // never authentication. Identity was already established above, so a 404
+    // just degrades the profile honestly.
     const verified = await fetchDirectJson(
       `/direct/user/${encodeURIComponent(cleanEid)}.json`,
       sakaiCookie
     );
 
-    let degradedVerification = false;
+    const degradedVerification = !verified.ok;
     if (!verified.ok) {
-      if (verified.kind === 'notfound') {
-        // Concept: the auth gate (403) rejects anonymous sessions BEFORE entity
-        // lookup, so a 404 from the entity path proves the portal accepted the
-        // session — this Sakai build just keys user entities differently than
-        // by-eid. We proceed with an honest, minimal profile (no invented
-        // names) and flag it, rather than lying with "unreachable".
-        console.info(`[login] ${cleanEid}: user entity not retrievable by eid (404) — auth gate passed, treating as authenticated.`);
-        degradedVerification = true;
-      } else if (verified.kind === 'unreachable') {
-        recordFailedAttempt(cleanEid);
-        console.warn(`[login] ${cleanEid}: verification fetch failed (network/timeout) — failing closed.`);
-        return res.status(502).json({
-          success: false,
-          authenticated: false,
-          unreachable: true,
-          message: 'Could not verify your sign-in in time — the campus link stalled. If your details are correct, try again shortly.',
-        });
-      } else {
-        recordFailedAttempt(cleanEid);
-        console.info(`[login] ${cleanEid}: auth gate rejected the session — invalid credentials.`);
-        return res.status(200).json({
-          success: true,
-          authenticated: false,
-          invalid: true,
-          message: 'Invalid student ID or password.',
-        });
-      }
+      console.info(
+        `[login] ${cleanEid}: user entity unavailable (${verified.kind as string}) — authenticating with a minimal honest profile.`
+      );
     }
 
-    // Step 3 — Build the profile from ONLY what the portal actually returned.
+    // Step 4 — Build the profile from ONLY what the portal actually returned.
     // Sakai does not expose program / year of study / faculty, so we return
     // null and the UI shows an honest "not provided" — never an invention.
     const p = (verified.ok ? verified.data : null) || {};
@@ -772,7 +847,7 @@ async function startServer() {
 
     clearAttempts(cleanEid);
 
-    // Step 4 — Store the REAL Sakai cookie server-side; hand the client an
+    // Step 5 — Store the REAL Sakai cookie server-side; hand the client an
     // opaque token it can later present for sync calls (Phase 2).
     const sessionToken = crypto.randomUUID();
     sessions.set(sessionToken, {
