@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, FileText, CheckCircle2, Copy, DownloadCloud, BookOpen, Eye, Download } from 'lucide-react';
+import { X, FileText, CheckCircle2, Copy, DownloadCloud, BookOpen, Eye, Download, ExternalLink } from 'lucide-react';
 import { CachedFileRecord, PreviewFileRecord } from '../types';
 import { formatBytes } from '../utils/format';
 
@@ -39,6 +39,35 @@ export const FileViewerModal: React.FC<FileViewerModalProps> = ({
   const [copied, setCopied] = React.useState(false);
 
   if (!file) return null;
+
+  // Concept: phones fail PDFs SILENTLY inside iframes — Android Chrome just
+  // refuses to render PDF documents embedded in a frame (blank pane, or a
+  // useless download chip). Top-level navigation, however, opens Chrome's own
+  // PDF viewer — so the honest answer is an explicit full-view affordance,
+  // not a panel that looks broken and a modal that "keeps prompting to
+  // download". blob: URLs navigate top-level fine; data: URIs do NOT (Chrome
+  // blocks top-level data: navigation), so a cached record is converted to a
+  // blob on the fly, and the blob URL is revoked once the tab has loaded.
+  const handleOpenFullView = () => {
+    try {
+      if (file.content.startsWith('blob:')) {
+        window.open(file.content, '_blank');
+        return;
+      }
+      if (file.content.startsWith('data:')) {
+        const comma = file.content.indexOf(',');
+        const mimePart = file.content.slice(5, comma).split(';')[0] || 'application/pdf';
+        const bytes = Uint8Array.from(atob(file.content.slice(comma + 1)), (c) => c.charCodeAt(0));
+        const blobUrl = URL.createObjectURL(new Blob([bytes], { type: mimePart }));
+        window.open(blobUrl, '_blank');
+        // Generous grace period: the PDF tab is already holding its own copy
+        // of the bytes once loaded; invalidating ours afterwards is safe.
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 5 * 60 * 1000);
+      }
+    } catch {
+      // popup blocked / storage edge — the inline iframe remains as fallback
+    }
+  };
 
   const ephemeral = 'ephemeral' in file && !!file.ephemeral;
   const binary = isRealBinary(file);
@@ -164,11 +193,27 @@ export const FileViewerModal: React.FC<FileViewerModalProps> = ({
         {binary ? (
           <div className="flex-1 overflow-y-auto bg-slate-950/40">
             {category === 'pdf' && (
-              <iframe
-                src={file.content}
-                title={file.title}
-                className="w-full h-full min-h-[420px] bg-white"
-              />
+              <div className="h-full flex flex-col">
+                <iframe
+                  src={file.content}
+                  title={file.title}
+                  className="flex-1 w-full min-h-[360px] bg-white"
+                />
+                {/* Desktop renders the iframe; Android Chrome does not — this
+                    affordance says so up front instead of leaving a blank
+                    pane that looks like a broken preview. */}
+                <div className="p-2.5 border-t border-slate-800/60 bg-slate-950/60 flex items-center justify-between gap-2">
+                  <span className="text-[11px] text-slate-500">
+                    PDF not rendering in this view?
+                  </span>
+                  <button
+                    onClick={handleOpenFullView}
+                    className="flex items-center gap-1 text-xs text-amber-400 hover:text-amber-300 transition font-medium shrink-0"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" /> Open full view
+                  </button>
+                </div>
+              </div>
             )}
             {category === 'image' && (
               <div className="p-5 flex items-center justify-center">

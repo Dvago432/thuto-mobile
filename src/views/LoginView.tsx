@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { LogIn, Sparkles, ShieldCheck, ExternalLink, GraduationCap } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import nulCrest from '../assets/images/crest';
 
 export const LoginView: React.FC = () => {
   const { login } = useAuth();
@@ -45,7 +46,7 @@ export const LoginView: React.FC = () => {
             <div className="absolute -inset-2 bg-gradient-to-r from-amber-500/40 via-amber-400/30 to-amber-600/40 rounded-full blur-lg" />
             <div className="relative w-24 h-24 rounded-full bg-gradient-to-b from-[#10233D] via-[#0B192C] to-[#020617] p-2 ring-2 ring-amber-500/70 shadow-2xl shadow-amber-500/25 flex items-center justify-center overflow-hidden border border-amber-400/40">
               <img
-                src="/src/assets/images/nul_crest_original_themed.png"
+                src={nulCrest}
                 alt="National University of Lesotho Crest"
                 className="w-full h-full object-contain drop-shadow-[0_4px_12px_rgba(0,0,0,0.8)]"
                 referrerPolicy="no-referrer"

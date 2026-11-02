@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Lock, Bell, Wifi, WifiOff } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { notificationService } from '../services/notifications';
+import nulCrest from '../assets/images/crest';
 
 interface HeaderProps {
   onOpenNotifications: () => void;
@@ -43,7 +44,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenNotifications }) => {
         <div className="flex items-center gap-2.5">
           <div className="w-9 h-9 rounded-full bg-gradient-to-b from-[#10233D] to-[#020617] p-1 ring-2 ring-amber-500/70 shadow-sm shadow-amber-500/25 flex items-center justify-center overflow-hidden border border-amber-400/40 shrink-0">
             <img
-              src="/src/assets/images/nul_crest_original_themed.png"
+              src={nulCrest}
               alt="NUL Crest"
               className="w-full h-full object-contain"
               referrerPolicy="no-referrer"

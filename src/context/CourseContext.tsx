@@ -3,6 +3,7 @@ import { Course, Assignment, CourseResource, CachedFileRecord, PreviewFileRecord
 import { MOCK_COURSES } from '../data/mockCourses';
 import { offlineStorage } from '../services/storage';
 import { notificationService } from '../services/notifications';
+import { resolveResourceMime } from '../utils/mime';
 
 interface CourseContextType {
   courses: Course[];
@@ -112,7 +113,7 @@ export const CourseProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, []);
 
   // Reload/Auto-fetch courses for current authenticated student
-  const reloadEnrolledCourses = useCallback(async () => {
+  const reloadEnrolledCourses = useCallback(async (sessionTokenOverride?: string) => {
     const currentUser = getInitialUser();
     console.info('[CourseProvider:reloadEnrolledCourses] Triggered. Current user:', currentUser?.studentNumber);
 
@@ -131,7 +132,9 @@ export const CourseProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const storageKey = getCourseStorageKey(currentUser);
 
     try {
-      const token = getStoredSessionToken();
+      // The event-carried token (when the caller is the post-login sweep) is
+      // the single source of truth — it is the token THIS login just minted.
+      const token = sessionTokenOverride ?? getStoredSessionToken();
       const res = await fetch('/api/sakai/extract-courses', {
         method: 'POST',
         headers: {
@@ -181,10 +184,15 @@ export const CourseProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     // Concept: login is a state TRANSITION, not a mount. The sweep at mount
     // runs before any session exists (that is exactly why materials never
     // auto-loaded after fresh logins). AuthContext now announces when auth
-    // has settled; the full course sweep re-runs at that moment.
-    const handleAuthSettled = () => {
+    // has settled; the full course sweep re-runs at that moment. The fresh
+    // token rides IN the event — this listener can fire in the same tick as
+    // login, BEFORE the thing that set it is even re-rendered, so reading
+    // localStorage here could still return a stale token from a previous
+    // session (which 401s after a redeploy/spin-down and silently skips).
+    const handleAuthSettled = (e: Event) => {
+      const detail = (e as CustomEvent<{ sessionToken?: string | null }>).detail;
       console.info('[CourseProvider] Auth settled — re-running the course sweep after login.');
-      reloadEnrolledCourses();
+      reloadEnrolledCourses(detail?.sessionToken ?? undefined);
     };
 
     const handleCoursesUpdated = (e: Event) => {
@@ -289,7 +297,7 @@ export const CourseProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       for (let i = 0; i < bytes.length; i += CHUNK) {
         binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
       }
-      const mime = res.headers.get('content-type') || 'application/octet-stream';
+      const mime = resolveResourceMime(resource.fileName, resource.fileType, res.headers.get('content-type'));
       const dataUri = `data:${mime};base64,${btoa(binary)}`;
 
       await offlineStorage.saveFile({
@@ -360,17 +368,20 @@ export const CourseProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         return null;
       }
 
-      const blob = await res.blob();
-      const mime = blob.type || res.headers.get('content-type') || 'application/octet-stream';
-      const url = URL.createObjectURL(blob);
-      console.info(`[CourseProvider] Preview ready: ${resource.title} (${blob.size} bytes, ${mime}) — nothing stored.`);
+      const buffer = await res.arrayBuffer();
+      // The Blob's type decides render-vs-download on the phone. Resolve an
+      // honest MIME from the resource metadata (mime.ts) — never trust a
+      // bare 'application/octet-stream' from the portal to mean "unrenderable".
+      const mime = resolveResourceMime(resource.fileName, resource.fileType, res.headers.get('content-type'));
+      const url = URL.createObjectURL(new Blob([buffer], { type: mime }));
+      console.info(`[CourseProvider] Preview ready: ${resource.title} (${buffer.byteLength} bytes, ${mime}) — nothing stored.`);
       return {
         id: resource.id,
         courseId: resource.courseId,
         courseCode,
         title: resource.title,
         fileName: resource.fileName,
-        fileSize: blob.size, // the true byte count, straight from the served file
+        fileSize: buffer.byteLength, // the true byte count, straight from the served file
         fileType: resource.fileType,
         cachedAt: '', // unused for ephemeral records; nothing was cached
         content: url,

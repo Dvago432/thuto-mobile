@@ -14,6 +14,7 @@ import { useCourses } from '../context/CourseContext';
 import { useAuth } from '../context/AuthContext';
 import { PWAInstallBanner } from '../components/PWAInstallBanner';
 import { SakaiSyncModal } from '../components/SakaiSyncModal';
+import nulCrest from '../assets/images/crest';
 
 interface DashboardViewProps {
   onSelectCourse: (courseId: string) => void;
@@ -75,7 +76,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           {/* Amber Circular Medallion Frame */}
           <div className="relative w-28 h-28 md:w-32 md:h-32 rounded-full bg-gradient-to-b from-[#10233D] via-[#0B192C] to-[#020617] p-2 ring-2 ring-amber-500/70 shadow-2xl shadow-amber-500/25 flex items-center justify-center overflow-hidden border border-amber-400/40">
             <img
-              src="/src/assets/images/nul_crest_original_themed.png"
+              src={nulCrest}
               alt="National University of Lesotho Official Crest"
               className="w-full h-full object-contain drop-shadow-[0_4px_12px_rgba(0,0,0,0.8)]"
               referrerPolicy="no-referrer"

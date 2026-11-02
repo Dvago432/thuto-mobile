@@ -125,7 +125,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       setUser(demoUser);
       setIsLocked(false);
-      window.dispatchEvent(new Event('thuto-auth-settled'));
+      // Demo never touches the gateway — clear any stale live token NOW (same
+      // synchronous-write race discipline as the live path below).
+      try {
+        localStorage.removeItem(AUTH_SESSION_TOKEN_KEY);
+      } catch {
+        // storage unavailable
+      }
+      window.dispatchEvent(new CustomEvent('thuto-auth-settled', { detail: { sessionToken: null } }));
       return { success: true };
     }
 
@@ -150,12 +157,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
         setUser(liveUser);
         setIsLocked(false);
+        // Concept: the sweep must see the token NOW. The sessionToken state
+        // change above is persisted to localStorage by a useEffect, which
+        // React runs only AFTER paint — but the 'thuto-auth-settled' event is
+        // dispatched synchronously on the line below, and CourseProvider's
+        // sweep reads localStorage. Writing the fresh token (and user) there
+        // first removes a race that let a STALE portal token win the sweep
+        // (visible after every server redeploy / free-tier spin-down, when
+        // the gateway's in-memory session store is empty: the sweep 401s and
+        // quietly skips — "login works, auto-load doesn't").
+        try {
+          localStorage.setItem(AUTH_SESSION_TOKEN_KEY, data.sessionToken || '');
+          if (staySignedIn) {
+            localStorage.setItem(AUTH_USER_KEY, JSON.stringify(liveUser));
+          }
+          localStorage.setItem(AUTH_SETTINGS_KEY, JSON.stringify({ staySignedIn }));
+        } catch {
+          // storage unavailable — the useEffect remains the fallback path
+        }
         // Concept: cross-provider signaling. CourseProvider mounts BEFORE this
         // provider, so its mount-time course sweep ran with no session and
         // skipped — that is why students had to sync materials manually after
         // every login. Rather than coupling the providers together, login
-        // completion is announced; CourseProvider listens and re-runs its sweep.
-        window.dispatchEvent(new Event('thuto-auth-settled'));
+        // completion is announced; CourseProvider listens and re-runs its
+        // sweep. The fresh token rides IN the event (belt to the suspenders
+        // above): the listener has the exact token of THIS login, matched
+        // against the server store, so no racing reader can misconstrue it.
+        window.dispatchEvent(
+          new CustomEvent('thuto-auth-settled', { detail: { sessionToken: data.sessionToken || null } })
+        );
         return { success: true };
       }
 
