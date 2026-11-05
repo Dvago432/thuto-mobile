@@ -209,10 +209,13 @@ export const NotificationsView: React.FC<{ onViewAssignment: (assignmentId: stri
                   key={ann.id}
                   className={`rounded-3xl bg-slate-900 border transition ${
                     expanded
-                      ? 'p-4 border-amber-500/30 space-y-2 shadow-lg'
+                      ? 'p-4 border-amber-500/30 space-y-2 shadow-lg cursor-pointer'
                       : 'p-3 border-slate-800 hover:border-slate-700 cursor-pointer shadow-sm'
                   }`}
-                  onClick={expanded ? undefined : () => setExpandedId(ann.id)}
+                  // Chevron contract: tap toggles BOTH ways — an open card
+                  // collapses on tap (the previous 'do nothing when expanded'
+                  // froze the chevron down, which the student reported).
+                  onClick={() => setExpandedId(expanded ? null : ann.id)}
                 >
                   {/* Collapsed = context only: kind, course, age, title (item 2) */}
                   <div className="flex items-center justify-between gap-2">

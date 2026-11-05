@@ -166,19 +166,14 @@ export const AssignmentsView: React.FC<{ selectedAssignmentId?: string | null }>
                     : 'bg-slate-900 border-slate-800 text-white'
                 }`}
               >
-                {/* Item-15: overdue status is the ONE thing that matters at a
-                    glance — pinned to the card's top-right corner, always
-                    visible regardless of card width. Submit Work stays put. */}
-                {!isSubmitted && countdown.expired && (
-                  <span className="absolute top-3 right-3 px-2.5 py-1 rounded-xl bg-rose-500/15 border border-rose-500/40 text-rose-400 text-[10px] font-bold uppercase tracking-wider">
-                    Overdue
-                  </span>
-                )}
+                {/* Item-15: overdue lives in the RIGHT column's top slot —
+                    top-right of the card but in normal flow, so it can never
+                    overlap the Submit Work button at narrow widths. */}
                 <div
                   className={`flex flex-wrap items-start justify-between gap-3 ${
                     expanded ? '' : 'cursor-pointer'
                   }`}
-                  onClick={expanded ? undefined : () => setExpandedAssignmentId(assignment.id)}
+                  onClick={() => setExpandedAssignmentId(expanded ? null : assignment.id)}
                 >
                   <div className="space-y-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
@@ -218,6 +213,11 @@ export const AssignmentsView: React.FC<{ selectedAssignmentId?: string | null }>
                   {/* Countdown Badge / Submission Action (actions stay visible
                       while collapsed — item 15: Submit Work stays where it is) */}
                   <div className="flex flex-col sm:items-end gap-2 shrink-0">
+                    {!isSubmitted && countdown.expired && (
+                      <span className="inline-flex px-2.5 py-1 rounded-xl bg-rose-500/15 border border-rose-500/40 text-rose-400 text-[10px] font-bold uppercase tracking-wider self-start sm:self-end">
+                        Overdue
+                      </span>
+                    )}
                     {isSubmitted ? (
                       <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-xs font-semibold">
                         <CheckCircle2 className="w-3.5 h-3.5" /> Submitted
