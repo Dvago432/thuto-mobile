@@ -3,9 +3,7 @@ import {
   Search, 
   ArrowRight, 
   Clock, 
-  FileText, 
   GraduationCap, 
-  Sparkles,
   RefreshCw,
   ChevronRight,
   DownloadCloud
@@ -47,11 +45,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     const diff = (new Date(a.dueDate).getTime() - Date.now()) / (1000 * 60 * 60);
     return diff > 0 && diff <= 24;
   });
-
-  // Calculate average course progress
-  const avgProgress = Math.round(
-    courses.reduce((acc, c) => acc + c.progressPercent, 0) / (courses.length || 1)
-  );
 
   // Search-only filtering: the faculty chip row was removed in favor of the
   // search bar, which already matches code, title, or lecturer.
@@ -103,10 +96,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
           <div className="space-y-2 max-w-lg">
             <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold text-amber-400 tracking-wider uppercase flex items-center gap-1">
-                <GraduationCap className="w-3.5 h-3.5" />
-                {user?.program || 'Undergraduate Portal'}
-              </span>
+              {/* Sakai does not expose program/year of study — render the line
+                  ONLY when the portal actually supplied both parts (item-14 rule). */}
+              {user?.program && (
+                <span className="text-xs font-semibold text-amber-400 tracking-wider uppercase flex items-center gap-1">
+                  <GraduationCap className="w-3.5 h-3.5" />
+                  {user.program}
+                </span>
+              )}
               {/* Only render a year if the portal actually supplied one — never fabricate it. */}
               {user?.year != null && (
                 <>
@@ -141,52 +138,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
           </div>
 
-          {/* Tactile Progress Dial (Inspired by Smart Home & Learn Up gauges) */}
-          <div className="flex items-center gap-4 bg-slate-900/60 border border-slate-800/90 rounded-2xl p-4 shrink-0 backdrop-blur-md">
-            <div className="relative w-20 h-20 flex items-center justify-center">
-              <svg className="w-20 h-20 -rotate-90">
-                <circle
-                  cx="40"
-                  cy="40"
-                  r="32"
-                  className="text-slate-800"
-                  strokeWidth="7"
-                  stroke="currentColor"
-                  fill="transparent"
-                />
-                <circle
-                  cx="40"
-                  cy="40"
-                  r="32"
-                  className="text-amber-400 transition-all duration-1000 ease-out"
-                  strokeWidth="7"
-                  strokeDasharray={201}
-                  strokeDashoffset={201 - (201 * avgProgress) / 100}
-                  strokeLinecap="round"
-                  stroke="currentColor"
-                  fill="transparent"
-                />
-              </svg>
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-                <span className="font-display font-extrabold text-lg text-white tabular-nums leading-none">
-                  {avgProgress}%
-                </span>
-                <span className="text-[9px] text-slate-400 mt-0.5">Term Goal</span>
-              </div>
-            </div>
-
-            <div className="space-y-1 text-xs">
-              <div className="text-slate-300 font-medium">Academic Standing</div>
-              <div className="flex items-center gap-1.5 text-slate-400 text-[11px]">
-                <FileText className="w-3 h-3 text-amber-400" />
-                <span>{cachedFiles.length} cached offline</span>
-              </div>
-              <div className="flex items-center gap-1.5 text-slate-400 text-[11px]">
-                <Sparkles className="w-3 h-3 text-emerald-400" />
-                <span>91% attendance</span>
-              </div>
-            </div>
-          </div>
         </div>
       </div>
 
@@ -291,34 +242,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     <span className="font-mono text-xs font-bold text-amber-400 tracking-wider">
                       {course.code}
                     </span>
-                    <span className="text-[11px] text-slate-500">
-                      {course.credits} Credits
-                    </span>
                   </div>
 
                   <h3 className="font-display font-bold text-sm text-white mt-1 group-hover:text-amber-300 transition-colors line-clamp-1">
                     {course.name}
                   </h3>
-
-                  <p className="text-xs text-slate-400 mt-1 line-clamp-2 leading-relaxed">
-                    {course.syllabusOverview}
-                  </p>
                 </div>
 
                 <div className="pt-4 mt-3 border-t border-slate-800/70 space-y-2">
                   <div className="flex items-center justify-between text-[11px] text-slate-400">
-                    <span>{course.instructor}</span>
-                    <span className="font-mono font-medium text-slate-300">
-                      {course.progressPercent}% syllabus
-                    </span>
-                  </div>
-
-                  {/* Progress bar */}
-                  <div className="w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
-                    <div
-                      className="h-full rounded-full bg-amber-500 transition-all"
-                      style={{ width: `${course.progressPercent}%` }}
-                    />
+                    <span className="truncate">{course.instructor}</span>
                   </div>
 
                   <div className="flex items-center justify-between text-[11px] pt-1">

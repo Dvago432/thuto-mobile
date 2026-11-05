@@ -100,11 +100,8 @@ export const AssignmentsView: React.FC<{ selectedAssignmentId?: string | null }>
         <div>
           <h1 className="text-xl font-display font-bold text-white tracking-tight flex items-center gap-2">
             <CalendarClock className="w-5 h-5 text-amber-400" />
-            Assignment Deadlines & Submissions
+            Deadlines
           </h1>
-          <p className="text-xs text-slate-400 mt-0.5">
-            Synchronized with university course calendars with automated countdown notifications
-          </p>
         </div>
 
         {/* Filter Segmented Buttons */}

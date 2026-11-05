@@ -79,25 +79,23 @@ export const ProfileSettingsView: React.FC = () => {
               <p className="text-xs text-amber-300/90 font-mono mt-0.5">
                 Student No: {user?.studentNumber}
               </p>
-              <p className="text-xs text-slate-300 mt-0.5">
-                {/* Sakai does not expose program of study — say so honestly instead of blank. */}
-                {user?.program || (
-                  <span className="text-slate-500 italic">Program not provided by portal</span>
-                )}
-              </p>
+              {/* Sakai does not expose program/faculty — when the portal does not
+                  supply a value, the row simply does not exist (item-14 rule:
+                  never render a field just to say nothing is known). */}
+              {user?.program && (
+                <p className="text-xs text-slate-300 mt-0.5">{user.program}</p>
+              )}
             </div>
           </div>
         </div>
 
-        <div className="pt-3 border-t border-slate-700/60 grid grid-cols-2 gap-3 text-xs text-slate-300">
-          <div>
-            <span className="text-slate-400 block text-[11px]">Faculty</span>
-            <span className="font-medium">
-              {user?.faculty || (
-                <span className="text-slate-500 italic font-normal">Not provided by portal</span>
-              )}
-            </span>
-          </div>
+        <div className="pt-3 border-t border-slate-700/60 text-xs text-slate-300">
+          {user?.faculty && (
+            <div className="mb-3">
+              <span className="text-slate-400 block text-[11px]">Faculty</span>
+              <span className="font-medium">{user.faculty}</span>
+            </div>
+          )}
           <div>
             <span className="text-slate-400 block text-[11px]">Campus Email</span>
             <span className="font-medium truncate block">{user?.email}</span>

@@ -378,10 +378,9 @@ export const CourseDetailView: React.FC<CourseDetailViewProps> = ({
               <Mail className="w-3.5 h-3.5 inline" />
             </a>
           </div>
-          <span>·</span>
-          <span>{activeCourse.credits} Credits</span>
-          <span>·</span>
-          <span className="text-amber-400 font-medium">{activeCourse.progressPercent}% syllabus completed</span>
+          {/* Credits and syllabus-completion are not exposed by Sakai — the old
+              renderings showed hard-coded "12 Credits" / "0%" for every live
+              course, which is fabrication. Item-14 rule: no value, no row. */}
         </div>
       </div>
 
