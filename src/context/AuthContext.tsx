@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { StudentUser } from '../types';
+import { notificationService } from '../services/notifications';
 
 /**
  * Result of a login attempt. A discriminated union so the UI can never
@@ -221,6 +222,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         window.dispatchEvent(
           new CustomEvent('thuto-auth-settled', { detail: { sessionToken: data.sessionToken || null } })
         );
+        // Caveat item 5: ONE default-moment permission ask, immediately after
+        // the first successful login — the classic good moment (intent clear,
+        // reward visible). The browser itself never re-prompts after a denial,
+        // so this cannot become nagging; the in-app Enable button remains for
+        // anyone who dismissed or blocked it.
+        try {
+          void notificationService.requestPermission();
+        } catch {
+          // Notification API unavailable in this environment
+        }
         return { success: true };
       }
 

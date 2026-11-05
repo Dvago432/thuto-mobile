@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   BellRing, 
   Volume2, 
@@ -9,11 +9,50 @@ import {
   Trash2,
   Check,
   Megaphone,
-  BookOpen
+  BookOpen,
+  ChevronDown
 } from 'lucide-react';
 import { notificationService } from '../services/notifications';
-import { NotificationRule, TriggeredNotification, CourseAnnouncement } from '../types';
+import { NotificationRule, TriggeredNotification, CourseAnnouncement, Course } from '../types';
 import { useCourses } from '../context/CourseContext';
+import { alertKind, alertKindPriority, ALERT_KIND_META, isOlderThanMonths } from '../utils/alerts';
+
+// Concept (caveat items 1, 2, 12): the first glance gives CONTEXT — kind,
+// course, and age — never a wall of text. The full body is a tap away.
+const CourseFilterChips: React.FC<{
+  courses: Course[];
+  value: string;
+  onChange: (v: string) => void;
+}> = ({ courses, value, onChange }) => {
+  const codes = Array.from(new Set(courses.map((c) => c.code)));
+  return (
+    <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+      <button
+        onClick={() => onChange('all')}
+        className={`px-2.5 py-1 rounded-xl text-[11px] font-semibold border transition shrink-0 ${
+          value === 'all'
+            ? 'bg-amber-500 text-slate-950 border-amber-500'
+            : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white'
+        }`}
+      >
+        All courses
+      </button>
+      {codes.map((code) => (
+        <button
+          key={code}
+          onClick={() => onChange(code)}
+          className={`px-2.5 py-1 rounded-xl text-[11px] font-mono font-bold border transition shrink-0 ${
+            value === code
+              ? 'bg-amber-500 text-slate-950 border-amber-500'
+              : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white'
+          }`}
+        >
+          {code}
+        </button>
+      ))}
+    </div>
+  );
+};
 
 export const NotificationsView: React.FC<{ onViewAssignment: (assignmentId: string) => void }> = ({
   onViewAssignment,
@@ -32,6 +71,11 @@ export const NotificationsView: React.FC<{ onViewAssignment: (assignmentId: stri
   });
   const [testSelectedRule, setTestSelectedRule] = useState<'3d' | '24h' | '6h' | '3h' | '1h'>('1h');
   const [testingSuccess, setTestingSuccess] = useState(false);
+  // Caveat item 2: alerts render COLLAPSED (context only); one tap expands.
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Caveat item 1: per-course filtering, one chip row per tab.
+  const [annCourseFilter, setAnnCourseFilter] = useState<string>('all');
+  const [alarmCourseFilter, setAlarmCourseFilter] = useState<string>('all');
 
   useEffect(() => {
     const handleUpdate = () => {
@@ -42,8 +86,10 @@ export const NotificationsView: React.FC<{ onViewAssignment: (assignmentId: stri
     return () => window.removeEventListener('thuto-notification-update', handleUpdate);
   }, []);
 
-  // Aggregate real announcements across all enrolled courses
-  const allAnnouncements = React.useMemo(() => {
+  // Aggregate real announcements across all enrolled courses, then apply the
+  // caveat-1/4 rules: 6-month retention, course filter, TEST > LAB > rest
+  // priority, recency inside each priority class.
+  const visibleAnnouncements = React.useMemo(() => {
     const list: CourseAnnouncement[] = [];
     courses.forEach((c) => {
       if (Array.isArray(c.announcements)) {
@@ -52,9 +98,23 @@ export const NotificationsView: React.FC<{ onViewAssignment: (assignmentId: stri
         });
       }
     });
-    // Sort newest first
-    return list.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [courses]);
+    return list
+      .filter((a) => !isOlderThanMonths(a.date, 6))
+      .filter((a) => annCourseFilter === 'all' || a.courseCode === annCourseFilter)
+      .sort(
+        (a, b) =>
+          alertKindPriority(a.title) - alertKindPriority(b.title) ||
+          Date.parse(b.date) - Date.parse(a.date)
+      );
+  }, [courses, annCourseFilter]);
+
+  // Same rules for the deadline-alarm history (classification runs on the
+  // assignment title, so 'TEST 1' alarm outranks a project submission one).
+  const visibleHistory = React.useMemo(() => {
+    return notificationService
+      .sortPriority(history.filter((h) => !isOlderThanMonths(h.triggeredAt, 6)))
+      .filter((h) => alarmCourseFilter === 'all' || h.courseCode === alarmCourseFilter);
+  }, [history, alarmCourseFilter]);
 
   const handleToggleRule = (key: NotificationRule['key']) => {
     const nextRules = rules.map((r) => (r.key === key ? { ...r, enabled: !r.enabled } : r));
@@ -106,7 +166,7 @@ export const NotificationsView: React.FC<{ onViewAssignment: (assignmentId: stri
           }`}
         >
           <Megaphone className="w-3.5 h-3.5" />
-          Lecturer Notices ({allAnnouncements.length})
+          Lecturer Notices ({visibleAnnouncements.length})
         </button>
         <button
           onClick={() => setActiveTab('alerts')}
@@ -117,7 +177,7 @@ export const NotificationsView: React.FC<{ onViewAssignment: (assignmentId: stri
           }`}
         >
           <Clock className="w-3.5 h-3.5" />
-          Deadline Alarms ({history.length})
+          Deadline Alarms ({visibleHistory.length})
         </button>
       </div>
 
@@ -125,11 +185,13 @@ export const NotificationsView: React.FC<{ onViewAssignment: (assignmentId: stri
       {activeTab === 'announcements' && (
         <div className="space-y-3">
           <div className="flex items-center justify-between text-xs text-slate-400 px-1">
-            <span className="font-semibold text-slate-200">Enrolled Course Broadcasts</span>
-            <span>Synchronized from Thuto Sakai</span>
+            <span className="font-semibold text-slate-200">Priority order: Tests first, then labs</span>
+            <span className="hidden sm:inline">Tap an alert to read it</span>
           </div>
 
-          {allAnnouncements.length === 0 ? (
+          <CourseFilterChips courses={courses} value={annCourseFilter} onChange={setAnnCourseFilter} />
+
+          {visibleAnnouncements.length === 0 ? (
             <div className="p-8 rounded-3xl bg-slate-900/60 border border-slate-800 text-center text-slate-400 text-xs space-y-2">
               <Megaphone className="w-8 h-8 text-slate-600 mx-auto" />
               <p className="font-semibold text-slate-300">No course announcements yet</p>
@@ -138,39 +200,72 @@ export const NotificationsView: React.FC<{ onViewAssignment: (assignmentId: stri
               </p>
             </div>
           ) : (
-            allAnnouncements.map((ann) => (
-              <div
-                key={ann.id}
-                className="p-4 rounded-3xl bg-slate-900 border border-slate-800 space-y-2 shadow-sm hover:border-slate-700 transition"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-xs font-bold text-amber-400 px-2.5 py-0.5 rounded-lg bg-amber-500/10 border border-amber-500/20">
-                      {ann.courseCode}
-                    </span>
-                    <span className="text-xs text-slate-400">
-                      by {ann.author} · {ann.date}
-                    </span>
+            visibleAnnouncements.map((ann) => {
+              const kind = alertKind(ann.title);
+              const meta = ALERT_KIND_META[kind];
+              const expanded = expandedId === ann.id;
+              return (
+                <div
+                  key={ann.id}
+                  className={`rounded-3xl bg-slate-900 border transition ${
+                    expanded
+                      ? 'p-4 border-amber-500/30 space-y-2 shadow-lg'
+                      : 'p-3 border-slate-800 hover:border-slate-700 cursor-pointer shadow-sm'
+                  }`}
+                  onClick={expanded ? undefined : () => setExpandedId(ann.id)}
+                >
+                  {/* Collapsed = context only: kind, course, age, title (item 2) */}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className={`text-[9px] font-bold px-2 py-0.5 rounded ${meta.badge}`}>
+                        {meta.label}
+                      </span>
+                      <span className="font-mono text-xs font-bold text-amber-400">
+                        {ann.courseCode}
+                      </span>
+                      <span className="text-[10px] text-slate-500">
+                        {new Date(ann.date).toLocaleDateString()}
+                      </span>
+                    </div>
+                    <ChevronDown
+                      className={`w-4 h-4 text-slate-500 shrink-0 transition-transform ${
+                        expanded ? 'rotate-180' : ''
+                      }`}
+                    />
                   </div>
-                  {ann.courseId && (
-                    <button
-                      onClick={() => setActiveCourseId(ann.courseId)}
-                      className="text-[11px] text-amber-400 hover:text-amber-300 flex items-center gap-1 font-medium"
-                    >
-                      <BookOpen className="w-3 h-3" /> Course
-                    </button>
+
+                  <h3
+                    className={`font-display font-semibold text-sm text-white ${expanded ? 'font-bold' : 'truncate pt-0.5'}`}
+                  >
+                    {ann.title}
+                  </h3>
+
+                  {expanded && (
+                    <div className="pt-2.5 border-t border-slate-800/70 space-y-2">
+                      <p className="text-xs text-slate-300 leading-relaxed whitespace-pre-wrap">
+                        {ann.content}
+                      </p>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] text-slate-500">
+                          by {ann.author} · {ann.date}
+                        </span>
+                        {ann.courseId && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveCourseId(ann.courseId);
+                            }}
+                            className="text-[11px] text-amber-400 hover:text-amber-300 flex items-center gap-1 font-medium"
+                          >
+                            <BookOpen className="w-3 h-3" /> Course
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   )}
                 </div>
-
-                <h3 className="font-display font-semibold text-sm text-white pt-0.5">
-                  {ann.title}
-                </h3>
-
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  {ann.content}
-                </p>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
       )}
@@ -273,11 +368,12 @@ export const NotificationsView: React.FC<{ onViewAssignment: (assignmentId: stri
             </div>
           </div>
 
-          {/* Triggered Alarms History */}
+          {/* Triggered Alarms History — priority-ordered, filterable, 6-month
+              retention (caveat items 1, 4) */}
           <div className="space-y-3 pt-2">
             <div className="flex items-center justify-between text-xs px-1">
               <span className="font-semibold text-slate-200">
-                Triggered Alarms History ({history.length})
+                Triggered Alarms ({visibleHistory.length})
               </span>
               {history.length > 0 && (
                 <button
@@ -289,39 +385,47 @@ export const NotificationsView: React.FC<{ onViewAssignment: (assignmentId: stri
               )}
             </div>
 
-            {history.length === 0 ? (
+            <CourseFilterChips courses={courses} value={alarmCourseFilter} onChange={setAlarmCourseFilter} />
+
+            {visibleHistory.length === 0 ? (
               <div className="p-6 rounded-2xl bg-slate-900/40 border border-slate-800 text-center text-slate-500 text-xs">
                 No deadline countdown alarms have fired yet.
               </div>
             ) : (
               <div className="space-y-2">
-                {history.map((item) => (
-                  <div
-                    key={item.id}
-                    className="p-3 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-between gap-3"
-                  >
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-[10px] font-bold px-2 py-0.5 rounded bg-amber-500/20 text-amber-400">
-                          {item.courseCode} · {item.thresholdLabel}
-                        </span>
-                        <span className="text-[10px] text-slate-500">
-                          {new Date(item.triggeredAt).toLocaleTimeString()}
-                        </span>
-                      </div>
-                      <p className="text-xs font-medium text-white truncate mt-1">
-                        {item.assignmentTitle}
-                      </p>
-                    </div>
-
-                    <button
-                      onClick={() => onViewAssignment(item.assignmentId)}
-                      className="px-2.5 py-1 rounded-xl bg-slate-800 text-slate-300 hover:text-white text-xs font-semibold shrink-0"
+                {visibleHistory.map((item) => {
+                  const meta = ALERT_KIND_META[alertKind(item.assignmentTitle)];
+                  return (
+                    <div
+                      key={item.id}
+                      className="p-3 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-between gap-3"
                     >
-                      View Task
-                    </button>
-                  </div>
-                ))}
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className={`text-[9px] font-bold px-2 py-0.5 rounded ${meta.badge}`}>
+                            {meta.label}
+                          </span>
+                          <span className="font-mono text-[10px] font-bold px-2 py-0.5 rounded bg-amber-500/20 text-amber-400">
+                            {item.courseCode} · {item.thresholdLabel}
+                          </span>
+                          <span className="text-[10px] text-slate-500">
+                            {new Date(item.triggeredAt).toLocaleTimeString()}
+                          </span>
+                        </div>
+                        <p className="text-xs font-medium text-white truncate mt-1">
+                          {item.assignmentTitle}
+                        </p>
+                      </div>
+
+                      <button
+                        onClick={() => onViewAssignment(item.assignmentId)}
+                        className="px-2.5 py-1 rounded-xl bg-slate-800 text-slate-300 hover:text-white text-xs font-semibold shrink-0"
+                      >
+                        View Task
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

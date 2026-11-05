@@ -230,17 +230,28 @@ export const CourseProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return list.sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
   }, [courses]);
 
-  // Periodic deadline countdown check loop (runs every 30s)
+  // Periodic deadline countdown check loop (runs every 30s). The same
+  // heartbeat drives persistent high-priority re-alerts (caveat item 3):
+  // unread TEST/LAB alerts re-fire as system notifications on the 5h period.
   useEffect(() => {
     if (allAssignments.length === 0) return;
     notificationService.checkAndTriggerDeadlines(allAssignments);
 
     const interval = setInterval(() => {
       notificationService.checkAndTriggerDeadlines(allAssignments);
+      notificationService.checkPersistentReminders();
     }, 30000);
 
     return () => clearInterval(interval);
   }, [allAssignments]);
+
+  // Even with zero deadlines, persistent re-alerts still run (their queue is
+  // the notification history, not the assignment list).
+  useEffect(() => {
+    notificationService.checkPersistentReminders();
+    const interval = setInterval(() => notificationService.checkPersistentReminders(), 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   const activeCourse = useMemo(() => {
     if (!activeCourseId) return null;

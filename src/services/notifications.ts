@@ -1,4 +1,18 @@
 import { Assignment, NotificationRule, TriggeredNotification } from '../types';
+import { alertKind, alertKindPriority } from '../utils/alerts';
+
+// Caveat item 3: a HIGH-PRIORITY alert (classified test/lab by title) must
+// not just sit in the in-app list — it re-fires as a SYSTEM notification at
+// a minimum of once every 5 hours while the student leaves it unread. The
+// period lives in one honest constant; a localStorage override
+// ('thuto_priority_interval_ms', integer ms) lets it be changed without a
+// rebuild. Platform truth: browsers can only fire these while the app is
+// running (or installed as a PWA — Phase 3.5's service worker will widen
+// this); the settings UI labels this honestly.
+export const PRIORITY_REMINDER_INTERVAL_MS = 5 * 60 * 60 * 1000; // 5 hours
+
+const PRIORITY_INTERVAL_KEY = 'thuto_priority_interval_ms';
+const PRIORITY_REMINDER_STATE_KEY = 'thuto_priority_reminder_state_v1';
 
 export const DEFAULT_RULES: NotificationRule[] = [
   {
@@ -185,6 +199,65 @@ class NotificationService {
     window.dispatchEvent(new CustomEvent('thuto-notification-update'));
 
     this.sendNotification(title, body, `test-${ruleKey}`);
+  }
+
+  // Caveat item 3: persistence loop. Called from the 30s app heartbeat
+  // (CourseContext). Re-fires a system notification for every UNREAD
+  // test/lab alert whose last reminder is older than the interval.
+  checkPersistentReminders(): void {
+    if (typeof window === 'undefined' || !('Notification' in window) || Notification.permission !== 'granted') {
+      return;
+    }
+    let interval = PRIORITY_REMINDER_INTERVAL_MS;
+    try {
+      const override = Number(localStorage.getItem(PRIORITY_INTERVAL_KEY));
+      if (Number.isFinite(override) && override >= 5 * 60 * 1000) interval = override;
+    } catch {
+      // storage unavailable — default period applies
+    }
+
+    let state: Record<string, number> = {};
+    try {
+      state = JSON.parse(localStorage.getItem(PRIORITY_REMINDER_STATE_KEY) || '{}') || {};
+    } catch {
+      state = {};
+    }
+
+    const history = this.getTriggeredHistory();
+    const now = Date.now();
+    let changed = false;
+    history.forEach((n) => {
+      if (n.read) return; // dismissed by the student — persistence ends
+      // Only HIGH priority persists: tests first, labs second (item 1).
+      const kind = alertKind(n.assignmentTitle);
+      if (kind !== 'test' && kind !== 'lab') return;
+      const last = state[n.id] || 0;
+      if (now - last < interval) return;
+      state[n.id] = now;
+      changed = true;
+      this.sendNotification(
+        `⚠️ [${n.courseCode}] ${n.assignmentTitle}`,
+        `${n.thresholdLabel} — still unread. Open Thuto Mobile to act before it slips.`,
+        n.id
+      );
+    });
+    if (changed) {
+      try {
+        localStorage.setItem(PRIORITY_REMINDER_STATE_KEY, JSON.stringify(state));
+      } catch {
+        // non-fatal — worst case an alert re-fires early
+      }
+    }
+  }
+
+  // Priority read for the notifications view: TEST alerts always outrank
+  // everything else, LABS outrank the rest, then recency settles ties.
+  sortPriority(history: TriggeredNotification[]): TriggeredNotification[] {
+    return [...history].sort(
+      (a, b) =>
+        alertKindPriority(a.assignmentTitle) - alertKindPriority(b.assignmentTitle) ||
+        Date.parse(b.triggeredAt) - Date.parse(a.triggeredAt)
+    );
   }
 
   checkAndTriggerDeadlines(assignments: Assignment[]): void {
