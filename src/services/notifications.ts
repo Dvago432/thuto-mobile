@@ -161,8 +161,8 @@ class NotificationService {
         new Notification(title, {
           body,
           tag,
-          icon: '/icon.svg',
-          badge: '/icon.svg',
+          icon: '/icons/icon-192.png',
+          badge: '/icons/icon-192.png',
         });
       } catch {
         // Fallback in environments where Notification constructor is restricted

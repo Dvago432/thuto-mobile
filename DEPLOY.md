@@ -59,6 +59,13 @@ per session; the server holds no secrets.
 
 ## Phase 5 ledger (from this deployment)
 
+- [x] Phase 3.5 (PWA) shipped: real manifest PNG icons (any + maskable,
+      generated from the crest via a locally-run `--no-save` sharp script),
+      service worker (`public/sw.js` — hashed assets cache-first, SPA
+      network-first with offline shell fallback, `/api/*` NEVER cached),
+      PROD-gated SW registration in `main.tsx`, apple-touch-icon for
+      iOS Add to Home Screen, notification icon paths now PNG.
+
 - [ ] Decide one package manager for production: commit an npm lockfile
       (reproducible strict-npm deploys), or go all-Bun on Render
       (`bun run server.ts` — Bun executes TS natively, tsx becomes
@@ -67,5 +74,6 @@ per session; the server holds no secrets.
 - [ ] esbuild `^0.28.0` bump (removes `--legacy-peer-deps` need).
 - [ ] `/api/*` JSON 404 fallthrough before the SPA catch-all.
 - [ ] `import.meta.dirname` in `vite.config.ts`.
-- [ ] Strip dead AI-Studio deps (`@google/genai`, unused assets in
-      `public/assets/aistudio/`).
+- [ ] Strip dead AI-Studio dep `@google/genai` (zero code references;
+      assets half DONE — `public/assets/aistudio/` stripped in the PWA
+      commit). Needs bun available to update `bun.lock` canon.

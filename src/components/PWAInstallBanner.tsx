@@ -11,6 +11,15 @@ export const PWAInstallBanner: React.FC = () => {
     return null;
   }
 
+  // Gate: only surfaces that can actually complete an install show this.
+  // Desktop Chrome sees beforeinstallprompt too, so `isInstallable` covers
+  // it — but a desktop that never fired the event (or blocked it) has no
+  // Install button and no Add-to-Home-Screen path, and a permanent banner
+  // advertising buttons that don't exist is dishonest UI (item 14 rule).
+  if (!isInstallable && !isIOS) {
+    return null;
+  }
+
   return (
     <>
       <div className="mx-4 my-3 p-3.5 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-900 to-[#10233D] border border-amber-500/30 text-white shadow-lg flex items-center justify-between gap-3">
