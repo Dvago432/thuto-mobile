@@ -1,13 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  CalendarClock, 
-  CheckCircle2, 
-  Send, 
-  Upload, 
-  X, 
-  Sparkles,
-  ChevronRight,
-  Filter
+import { alertKind, ALERT_KIND_META } from '../utils/alerts';
+import {
+  CalendarClock,
+  CheckCircle2,
+  Send,
+  Upload,
+  X,
+  ChevronDown
 } from 'lucide-react';
 import { useCourses } from '../context/CourseContext';
 import { Assignment } from '../types';
@@ -17,6 +16,9 @@ export const AssignmentsView: React.FC<{ selectedAssignmentId?: string | null }>
 }) => {
   const { allAssignments, submitAssignment } = useCourses();
   const [filter, setFilter] = useState<'all' | 'due-soon' | 'submitted'>('all');
+  // Caveat item 2 across surfaces: deadline cards also render CONTEXT FIRST
+  // (kind, course, title, countdown) — description/full details expand on tap.
+  const [expandedAssignmentId, setExpandedAssignmentId] = useState<string | null>(null);
   const [activeModalAssignment, setActiveModalAssignment] = useState<Assignment | null>(null);
   const [submissionNotes, setSubmissionNotes] = useState('');
   const [uploadedFileName, setUploadedFileName] = useState('');
@@ -151,6 +153,7 @@ export const AssignmentsView: React.FC<{ selectedAssignmentId?: string | null }>
           filteredAssignments.map((assignment) => {
             const countdown = getCountdownParts(assignment.dueDate);
             const isSubmitted = assignment.status === 'submitted';
+            const expanded = expandedAssignmentId === assignment.id;
 
             return (
               <div
@@ -171,28 +174,49 @@ export const AssignmentsView: React.FC<{ selectedAssignmentId?: string | null }>
                     Overdue
                   </span>
                 )}
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="space-y-1 max-w-lg">
-                    <div className="flex items-center gap-2">
+                <div
+                  className={`flex flex-wrap items-start justify-between gap-3 ${
+                    expanded ? '' : 'cursor-pointer'
+                  }`}
+                  onClick={expanded ? undefined : () => setExpandedAssignmentId(assignment.id)}
+                >
+                  <div className="space-y-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {/* Social-media context strip (item 2): kind + course +
+                          points — the first line says WHAT this is. */}
+                      <span
+                        className={`text-[9px] font-bold px-2 py-0.5 rounded ${
+                          ALERT_KIND_META[alertKind(assignment.title)].badge
+                        }`}
+                      >
+                        {ALERT_KIND_META[alertKind(assignment.title)].label}
+                      </span>
                       <span className="font-mono text-xs font-bold text-amber-400 tracking-wider">
                         {assignment.courseCode}
                       </span>
-                      <span className="text-slate-600">·</span>
-                      <span className="text-xs text-slate-400">
-                        {assignment.points} Maximum Points
-                      </span>
+                      {/* Real portal data (maxGradePointDisplay) — but a 0-row
+                          is a fabric "0 points", so it renders only when > 0. */}
+                      {assignment.points > 0 && (
+                        <>
+                          <span className="text-slate-600">·</span>
+                          <span className="text-xs text-slate-400">
+                            {assignment.points} Points
+                          </span>
+                        </>
+                      )}
                     </div>
 
-                    <h3 className="font-display font-bold text-sm text-white">
+                    <h3
+                      className={`font-display font-bold text-sm text-white ${
+                        expanded ? '' : 'truncate max-w-[270px] sm:max-w-lg'
+                      }`}
+                    >
                       {assignment.title}
                     </h3>
-
-                    <p className="text-xs text-slate-300 leading-relaxed line-clamp-2">
-                      {assignment.description}
-                    </p>
                   </div>
 
-                  {/* Countdown Badge / Submission Action */}
+                  {/* Countdown Badge / Submission Action (actions stay visible
+                      while collapsed — item 15: Submit Work stays where it is) */}
                   <div className="flex flex-col sm:items-end gap-2 shrink-0">
                     {isSubmitted ? (
                       <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-xs font-semibold">
@@ -215,25 +239,47 @@ export const AssignmentsView: React.FC<{ selectedAssignmentId?: string | null }>
                       </div>
                     )}
 
-                    {!isSubmitted && (
-                      <button
-                        onClick={() => setActiveModalAssignment(assignment)}
-                        className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold transition flex items-center gap-1.5 shadow-md active:scale-95"
-                      >
-                        <Send className="w-3.5 h-3.5" /> Submit Work
-                      </button>
-                    )}
+                    <div className="flex items-center gap-2">
+                      {!isSubmitted && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation(); // expand/collapse must not swallow Submission
+                            setActiveModalAssignment(assignment);
+                          }}
+                          className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold transition flex items-center gap-1.5 shadow-md active:scale-95"
+                        >
+                          <Send className="w-3.5 h-3.5" /> Submit Work
+                        </button>
+                      )}
+                      {(assignment.description || assignment.dueDate || assignment.feedback) && (
+                        <ChevronDown
+                          className={`w-4 h-4 text-slate-500 shrink-0 transition-transform ${
+                            expanded ? 'rotate-180' : ''
+                          }`}
+                        />
+                      )}
+                    </div>
                   </div>
                 </div>
 
-                <div className="pt-3 mt-3 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400">
-                  <span>Due Date: {new Date(assignment.dueDate).toLocaleString()}</span>
-                  {assignment.feedback && (
-                    <span className="text-amber-400/90 italic truncate max-w-xs">
-                      {assignment.feedback}
-                    </span>
-                  )}
-                </div>
+                {expanded && (
+                  <>
+                    {/* The wall of text lives HERE, one tap away (item 12) */}
+                    {assignment.description && (
+                      <p className="mt-3 text-xs text-slate-300 leading-relaxed">
+                        {assignment.description}
+                      </p>
+                    )}
+                    <div className="pt-3 mt-3 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400">
+                      <span>Due Date: {new Date(assignment.dueDate).toLocaleString()}</span>
+                      {assignment.feedback && (
+                        <span className="text-amber-400/90 italic truncate max-w-xs">
+                          {assignment.feedback}
+                        </span>
+                      )}
+                    </div>
+                  </>
+                )}
               </div>
             );
           })
