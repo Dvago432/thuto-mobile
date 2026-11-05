@@ -275,52 +275,47 @@ export const CourseDetailView: React.FC<CourseDetailViewProps> = ({
         <ArrowLeft className="w-4 h-4" /> Back to Dashboard
       </button>
 
-      {/* Transparent Fallback & Data Origin Banner */}
+      {/* Data-origin status — compact by design: one glance, one status word,
+          one action. The long explanation appears ONLY when it is actually
+          needed (portal unreachable) instead of always crowding the page. */}
       <div
-        className={`p-3.5 rounded-2xl text-xs border flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-sm ${
+        className={`p-2.5 rounded-2xl text-xs border flex items-center justify-between gap-2 shadow-sm ${
           activeCourse.dataSource === 'live_thuto'
             ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
             : 'bg-amber-500/15 border-amber-500/35 text-amber-200'
         }`}
       >
-        <div className="flex items-start gap-2.5 min-w-0">
-          <div className="mt-0.5 shrink-0">
-            {activeCourse.dataSource === 'live_thuto' ? (
-              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-            ) : (
-              <AlertTriangle className="w-4 h-4 text-amber-400" />
-            )}
-          </div>
-          <div className="space-y-0.5 min-w-0">
-            <div className="font-semibold text-white flex items-center gap-2">
-              <span>{activeCourse.dataSource === 'live_thuto' ? 'Live Thuto Portal Connection' : 'Offline / Fallback Data Notice'}</span>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-900/90 text-amber-300 border border-slate-700">
-                {activeCourse.dataSource === 'live_thuto' ? 'VERIFIED LIVE' : 'CAMPUS SERVER UNREACHABLE'}
-              </span>
-            </div>
-            <p className="text-[11px] text-slate-300 leading-relaxed">
-              {activeCourse.dataSourceNotice ||
-                'NUL Roma campus server (197.220.158.29) timed out during live query. Displaying cached local workspace. Live files & dropbox will sync when connection recovers.'}
-            </p>
-          </div>
+        <div className="flex items-center gap-2 min-w-0">
+          {activeCourse.dataSource === 'live_thuto' ? (
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+          ) : (
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+          )}
+          <span
+            className={`font-semibold ${
+              activeCourse.dataSource === 'live_thuto' ? 'text-emerald-300' : 'text-amber-200'
+            }`}
+          >
+            {activeCourse.dataSource === 'live_thuto' ? 'Verified live' : 'Campus unreachable'}
+          </span>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0 self-start sm:self-center">
-          {activeCourse.siteId && (
-            <span className="font-mono text-[10px] text-slate-400">
-              Sakai ID: {activeCourse.siteId}
-            </span>
-          )}
-          <button
-            onClick={handleSyncSiteLive}
-            disabled={isSyncingSite}
-            className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-400 text-[11px] font-semibold flex items-center gap-1 transition"
-          >
-            <RefreshCw className={`w-3 h-3 ${isSyncingSite ? 'animate-spin' : ''}`} />
-            Sync Site
-          </button>
-        </div>
+        <button
+          onClick={handleSyncSiteLive}
+          disabled={isSyncingSite}
+          className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-400 text-[11px] font-semibold flex items-center gap-1 transition shrink-0"
+        >
+          <RefreshCw className={`w-3 h-3 ${isSyncingSite ? 'animate-spin' : ''}`} />
+          Sync Site
+        </button>
       </div>
+
+      {activeCourse.dataSource !== 'live_thuto' && (
+        <p className="text-[11px] text-slate-400 leading-relaxed -mt-1 px-1">
+          {activeCourse.dataSourceNotice ||
+            'The campus server did not answer in time. Showing the last synced materials — sync again later for live files.'}
+        </p>
+      )}
 
       {syncStatusMsg && (
         <div className={`p-3 rounded-2xl text-xs flex items-center gap-2 border font-medium ${
@@ -333,24 +328,17 @@ export const CourseDetailView: React.FC<CourseDetailViewProps> = ({
         </div>
       )}
 
-      {/* Background auto-refresh truth chips (concept: staleness is never
-          a silent condition — the student always knows what they're reading) */}
+      {/* Background auto-refresh truth chips — one compact line each */}
       {autoSyncStatus[activeCourse.code] === 'running' && (
         <div className="p-2.5 rounded-2xl bg-slate-900/70 border border-slate-800 text-[11px] text-slate-300 flex items-center gap-2">
           <RefreshCw className="w-3.5 h-3.5 shrink-0 animate-spin text-amber-400" />
-          <span>
-            Refreshing {activeCourse.code} from Thuto in the background — you're reading the
-            cached data until it completes. No need to wait.
-          </span>
+          <span>Refreshing {activeCourse.code} in the background…</span>
         </div>
       )}
       {autoSyncStatus[activeCourse.code] === 'failed' && (
         <div className="p-2.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-200 flex items-center gap-2">
           <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-          <span>
-            The last background refresh failed (session may have expired, or the campus link
-            stalled) — materials may be out of date. Manual "Sync Site" is still available.
-          </span>
+          <span>Background refresh failed — materials may be stale. Sync Site recomputes everything.</span>
         </div>
       )}
 
