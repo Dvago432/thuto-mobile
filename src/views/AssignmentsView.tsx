@@ -155,7 +155,7 @@ export const AssignmentsView: React.FC<{ selectedAssignmentId?: string | null }>
             return (
               <div
                 key={assignment.id}
-                className={`p-4 rounded-3xl border transition-all shadow-md ${
+                className={`relative p-4 rounded-3xl border transition-all shadow-md ${
                   isSubmitted
                     ? 'bg-slate-900/60 border-slate-800/80 text-slate-400'
                     : countdown.isUrgent
@@ -163,6 +163,14 @@ export const AssignmentsView: React.FC<{ selectedAssignmentId?: string | null }>
                     : 'bg-slate-900 border-slate-800 text-white'
                 }`}
               >
+                {/* Item-15: overdue status is the ONE thing that matters at a
+                    glance — pinned to the card's top-right corner, always
+                    visible regardless of card width. Submit Work stays put. */}
+                {!isSubmitted && countdown.expired && (
+                  <span className="absolute top-3 right-3 px-2.5 py-1 rounded-xl bg-rose-500/15 border border-rose-500/40 text-rose-400 text-[10px] font-bold uppercase tracking-wider">
+                    Overdue
+                  </span>
+                )}
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="space-y-1 max-w-lg">
                     <div className="flex items-center gap-2">
@@ -186,7 +194,11 @@ export const AssignmentsView: React.FC<{ selectedAssignmentId?: string | null }>
 
                   {/* Countdown Badge / Submission Action */}
                   <div className="flex flex-col sm:items-end gap-2 shrink-0">
-                    {!isSubmitted ? (
+                    {isSubmitted ? (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-xs font-semibold">
+                        <CheckCircle2 className="w-3.5 h-3.5" /> Submitted
+                      </span>
+                    ) : countdown.expired ? null : (
                       <div className="flex flex-col items-start sm:items-end">
                         <span className="text-[10px] text-slate-400 uppercase tracking-wider font-medium">
                           Time Remaining
@@ -201,10 +213,6 @@ export const AssignmentsView: React.FC<{ selectedAssignmentId?: string | null }>
                           {countdown.text}
                         </div>
                       </div>
-                    ) : (
-                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-xs font-semibold">
-                        <CheckCircle2 className="w-3.5 h-3.5" /> Submitted
-                      </span>
                     )}
 
                     {!isSubmitted && (
