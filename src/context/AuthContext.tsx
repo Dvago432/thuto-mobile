@@ -20,6 +20,8 @@ interface AuthContextType {
   portalMode: 'live' | 'demo';
   /** Opaque gateway session token (the real Sakai cookie stays server-side). */
   sessionToken: string | null;
+  /** Student-controlled persistent login (item 9): disabled -> browser forgets. */
+  setStaySignedIn: (enabled: boolean) => void;
   login: (
     studentId: string,
     password?: string,
@@ -41,6 +43,19 @@ const AUTH_SETTINGS_KEY = 'thuto_auth_settings_v1';
 // student triggers course syncs.
 const AUTH_SESSION_TOKEN_KEY = 'thuto_session_token_v1';
 
+// The persistent-login SETTING is the single source of truth for whether this
+// browser restores the signed-in student after a full reload/close. Kept as a
+// storage accessor (not React state) because both the RESTORE decision at
+// provider mount and the in-app toggle need it before/without a render.
+function getStaySignedIn(): boolean {
+  try {
+    const settings = localStorage.getItem(AUTH_SETTINGS_KEY);
+    return settings ? JSON.parse(settings).staySignedIn !== false : true;
+  } catch {
+    return true;
+  }
+}
+
 const DEMO_STUDENT: StudentUser = {
   id: 'student-202304918',
   studentNumber: '202304918',
@@ -56,6 +71,10 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<StudentUser | null>(() => {
+    // Persistent login is a SETTING, not a side effect: when the student has
+    // disabled it, this browser must NOT restore the saved user after a
+    // reload — they get the honest login screen back.
+    if (!getStaySignedIn()) return null;
     try {
       const stored = localStorage.getItem(AUTH_USER_KEY);
       return stored ? JSON.parse(stored) : null;
@@ -75,17 +94,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return !!(pin && userStored);
   });
 
-  const [isPersistent, setIsPersistent] = useState<boolean>(() => {
-    try {
-      const settings = localStorage.getItem(AUTH_SETTINGS_KEY);
-      return settings ? JSON.parse(settings).staySignedIn !== false : true;
-    } catch {
-      return true;
-    }
-  });
+  const [isPersistent, setIsPersistent] = useState<boolean>(() => getStaySignedIn());
 
   const [portalMode, setPortalMode] = useState<'live' | 'demo'>('demo');
   const [sessionToken, setSessionToken] = useState<string | null>(() => {
+    // Same rule as the user restore: no persistent login, no restored gateway
+    // session. The token only re-enters storage through an explicit login.
+    if (!getStaySignedIn()) return null;
     return localStorage.getItem(AUTH_SESSION_TOKEN_KEY);
   });
 
@@ -104,6 +119,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       localStorage.removeItem(AUTH_USER_KEY);
     }
   }, [user, isPersistent]);
+
+  // Item-9 caveat: the student owns the persistence decision. Disabling
+  // applies IMMEDIATELY (this session remains signed in, but the browser
+  // forgets everything on close/reload); enabling persists what is live
+  // right now. Called from the Profile settings toggle.
+  const setStaySignedIn = (enabled: boolean) => {
+    setIsPersistent(enabled);
+    try {
+      localStorage.setItem(AUTH_SETTINGS_KEY, JSON.stringify({ staySignedIn: enabled }));
+      if (enabled) {
+        if (user) localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+        if (sessionToken) localStorage.setItem(AUTH_SESSION_TOKEN_KEY, sessionToken);
+      } else {
+        localStorage.removeItem(AUTH_USER_KEY);
+        localStorage.removeItem(AUTH_SESSION_TOKEN_KEY);
+      }
+    } catch {
+      // storage unavailable — the React state still governs this session
+    }
+  };
 
   const login = async (
     studentId: string,
@@ -255,6 +290,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         hasPIN,
         portalMode,
         sessionToken,
+        setStaySignedIn,
         login,
         logout,
         lockApp,

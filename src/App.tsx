@@ -98,7 +98,10 @@ const MainAppContent: React.FC = () => {
         }`}
       >
         {/* Top Header */}
-        <Header onOpenNotifications={() => setCurrentTab('notifications')} />
+        <Header
+          onOpenNotifications={() => setCurrentTab('notifications')}
+          onOpenProfile={() => setCurrentTab('profile')}
+        />
 
         {/* In-App Deadline Push Alert Banner */}
         <InAppAlertBanner onViewDeadlines={handleViewDeadlines} />

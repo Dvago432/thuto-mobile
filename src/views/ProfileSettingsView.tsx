@@ -24,6 +24,7 @@ export const ProfileSettingsView: React.FC = () => {
     user, 
     logout, 
     isPersistent, 
+    setStaySignedIn, 
     hasPIN, 
     setQuickPIN, 
     portalMode, 
@@ -116,16 +117,33 @@ export const ProfileSettingsView: React.FC = () => {
               <div className="flex items-center gap-2">
                 <Shield className="w-4 h-4 text-emerald-400" />
                 <h4 className="font-display font-semibold text-xs text-white">
-                  Persistent Login Enabled
+                  Persistent Login
                 </h4>
               </div>
               <p className="text-xs text-slate-400">
-                You will stay signed in across browser sessions without recurring Sakai timeouts.
+                {isPersistent
+                  ? 'You stay signed in across browser sessions. Turning this off signs you out on the next reload.'
+                  : 'You stay signed in only until you close this browser — you will sign in again on every visit.'}
               </p>
             </div>
-            <span className="text-xs font-semibold text-emerald-400 font-mono">
-              ACTIVE
-            </span>
+            {/* Student-owned switch (item 9): applies immediately —
+                off -> stored user + gateway token are forgotten;
+                on -> whatever is live right now is persisted. */}
+            <button
+              onClick={() => setStaySignedIn(!isPersistent)}
+              role="switch"
+              aria-checked={isPersistent}
+              aria-label="Persistent login"
+              className={`relative w-11 h-6 rounded-full transition shrink-0 ${
+                isPersistent ? 'bg-emerald-500' : 'bg-slate-700'
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
+                  isPersistent ? 'translate-x-5' : 'translate-x-0'
+                }`}
+              />
+            </button>
           </div>
 
           <div className="pt-3 border-t border-slate-800 flex items-center justify-between gap-3">

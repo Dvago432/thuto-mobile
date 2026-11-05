@@ -48,7 +48,7 @@ export const LoginView: React.FC = () => {
               <img
                 src={nulCrest}
                 alt="National University of Lesotho Crest"
-                className="w-full h-full object-contain drop-shadow-[0_4px_12px_rgba(0,0,0,0.8)]"
+                className="w-full h-full object-contain scale-[1.35] drop-shadow-[0_4px_12px_rgba(0,0,0,0.8)]"
                 referrerPolicy="no-referrer"
               />
             </div>

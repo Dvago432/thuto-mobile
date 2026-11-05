@@ -6,9 +6,10 @@ import nulCrest from '../assets/images/crest';
 
 interface HeaderProps {
   onOpenNotifications: () => void;
+  onOpenProfile: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ onOpenNotifications }) => {
+export const Header: React.FC<HeaderProps> = ({ onOpenNotifications, onOpenProfile }) => {
   const { user, hasPIN, lockApp, portalMode } = useAuth();
   const [isOnline, setIsOnline] = useState(
     typeof navigator !== 'undefined' ? navigator.onLine : true
@@ -46,7 +47,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenNotifications }) => {
             <img
               src={nulCrest}
               alt="NUL Crest"
-              className="w-full h-full object-contain"
+              className="w-full h-full object-contain scale-[1.35]"
               referrerPolicy="no-referrer"
             />
           </div>
@@ -99,12 +100,13 @@ export const Header: React.FC<HeaderProps> = ({ onOpenNotifications }) => {
           </button>
 
           {user && (
-            <div
-              className="w-9 h-9 rounded-xl bg-slate-800 border border-slate-700/80 flex items-center justify-center text-xs font-semibold text-amber-300 select-none"
-              title={`${user.fullName} (${user.studentNumber})`}
+            <button
+              onClick={onOpenProfile}
+              title="Your profile"
+              className="w-9 h-9 rounded-xl bg-slate-800 border border-slate-700/80 flex items-center justify-center text-xs font-semibold text-amber-300 select-none hover:bg-slate-700 hover:border-amber-500/40 transition active:scale-95"
             >
               {user.fullName.split(' ').map((n) => n[0]).join('').slice(0, 2)}
-            </div>
+            </button>
           )}
         </div>
       </div>
