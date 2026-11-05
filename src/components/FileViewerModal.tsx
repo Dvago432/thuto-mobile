@@ -73,6 +73,19 @@ export const FileViewerModal: React.FC<FileViewerModalProps> = ({
   const binary = isRealBinary(file);
   const category = binary ? mimeCategory(file.mimeType!) : 'other';
 
+  // Concept: Android/iOS browsers cannot render PDFs inside iframes — the
+  // frame just stays WHITE and Chrome offers a download (the exact
+  // "white + keeps prompting to download" the student reported on a course
+  // outline). Top-level navigation, however, opens the phone's own PDF
+  // viewer — so on touch-only devices the modal skips the doomed iframe and
+  // offers one big obvious "Open PDF" button (a user-gesture handler, so the
+  // popup cannot be blocked). Desktop keeps the inline luxury.
+  const isPhone = () =>
+    typeof window !== 'undefined' &&
+    window.matchMedia('(pointer: coarse)').matches &&
+    !window.matchMedia('(hover: hover)').matches;
+  const forceExternalPdf = isPhone();
+
   // Concept: in-memory lifecycles must be cleaned up. A blob URL survives
   // long after the viewer closes unless explicitly revoked — leaking PDF
   // blobs is how a phone's browser tab slowly dies. Every close path routes
@@ -194,25 +207,47 @@ export const FileViewerModal: React.FC<FileViewerModalProps> = ({
           <div className="flex-1 overflow-y-auto bg-slate-950/40">
             {category === 'pdf' && (
               <div className="h-full flex flex-col">
-                <iframe
-                  src={file.content}
-                  title={file.title}
-                  className="flex-1 w-full min-h-[360px] bg-white"
-                />
-                {/* Desktop renders the iframe; Android Chrome does not — this
-                    affordance says so up front instead of leaving a blank
-                    pane that looks like a broken preview. */}
-                <div className="p-2.5 border-t border-slate-800/60 bg-slate-950/60 flex items-center justify-between gap-2">
-                  <span className="text-[11px] text-slate-500">
-                    PDF not rendering in this view?
-                  </span>
-                  <button
-                    onClick={handleOpenFullView}
-                    className="flex items-center gap-1 text-xs text-amber-400 hover:text-amber-300 transition font-medium shrink-0"
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" /> Open full view
-                  </button>
-                </div>
+                {forceExternalPdf ? (
+                  <div className="flex-1 p-6 flex flex-col items-center justify-center text-center space-y-3">
+                    <div className="w-14 h-14 rounded-2xl bg-amber-500/10 text-amber-400 flex items-center justify-center">
+                      <FileText className="w-7 h-7" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-white">PDF Document</p>
+                      <p className="text-xs text-slate-400 mt-1 max-w-xs truncate">
+                        {file.fileName} · {formatBytes(file.fileSize)}
+                      </p>
+                    </div>
+                    <button
+                      onClick={handleOpenFullView}
+                      className="px-6 py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm inline-flex items-center gap-2 transition active:scale-95 shadow-md shadow-amber-500/20"
+                    >
+                      <ExternalLink className="w-4 h-4" /> Open PDF
+                    </button>
+                    <p className="text-[11px] text-slate-500 max-w-xs">
+                      Opens in your phone's PDF viewer — {ephemeral ? 'nothing is stored' : 'from your offline copy'}.
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <iframe
+                      src={file.content}
+                      title={file.title}
+                      className="flex-1 w-full min-h-[360px] bg-white"
+                    />
+                    <div className="p-2.5 border-t border-slate-800/60 bg-slate-950/60 flex items-center justify-between gap-2">
+                      <span className="text-[11px] text-slate-500">
+                        PDF not rendering in this view?
+                      </span>
+                      <button
+                        onClick={handleOpenFullView}
+                        className="flex items-center gap-1 text-xs text-amber-400 hover:text-amber-300 transition font-medium shrink-0"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" /> Open full view
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             )}
             {category === 'image' && (
@@ -228,9 +263,11 @@ export const FileViewerModal: React.FC<FileViewerModalProps> = ({
               <div className="p-6 space-y-4 text-center">
                 <DownloadCloud className="w-10 h-10 text-slate-600 mx-auto" />
                 <p className="text-xs text-slate-300 leading-relaxed max-w-xs mx-auto">
-                  {file.fileName} was fetched from the portal{ephemeral ? ' for preview' : ' and is stored offline on this device'}.
-                  This format ({file.mimeType}) cannot be previewed inside the app — use “Save /
-                  Open Externally” above to open it{!ephemeral ? ' or the offline copy' : ''}.
+                  {file.fileName} is a {file.mimeType} file. This format does not
+                  display inside a phone browser — that is normal. Tap{' '}
+                  <span className="text-amber-300 font-medium">Save / Open Externally</span>{' '}
+                  above and it opens in its own app (PowerPoint, Word, etc.)
+                  {!ephemeral ? ' — the file is already on this device.' : '.'}
                 </p>
                 {ephemeral && !onSaveOffline && (
                   <p className="text-[11px] text-slate-500">Tap “Save offline” from the Materials list to keep it.</p>
